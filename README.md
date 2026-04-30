@@ -36,6 +36,12 @@ git clone https://github.com/kwon-lee-1/dbt-architect-exam-prep.git
 > ⭐ = High-Yield question. Aim to nail every ⭐ before exam day.
 > In Obsidian, switch to **reading mode** (`Cmd+E`) and click each `Answer & Explanations` callout to reveal the answer and per-option explanations. In other tools, see [VIEWING.md](VIEWING.md).
 
+Sync the vault to your phone for on-the-go practice — answers stay collapsed in mobile reading mode just like on desktop. Setup options are in [VIEWING.md](VIEWING.md#study-on-the-go-phone-sync).
+
+| Question (collapsed) | Answer (expanded) |
+|---|---|
+| <img src="screenshots/obsidian_mobile_question.png" alt="Obsidian mobile reading mode showing a practice question with options A–D" width="280"> | <img src="screenshots/obsidian_mobile_answer.png" alt="Obsidian mobile reading mode showing the expanded Answer & Explanations callout with per-option explanations" width="280"> |
+
 | # | Topic | File | Questions |
 |---|---|---|---|
 | 1 | Warehouse Connections | [q01_warehouse_connections.md](practice_exam/q01_warehouse_connections.md) | 20 |

@@ -36,6 +36,10 @@ Sync the vault to your phone for practice testing during commutes, breaks, or an
 
 Install the [Obsidian mobile app](https://obsidian.md/download) (iOS/Android), then open the synced folder as a vault. Reading mode and collapsible callouts work the same way as on desktop.
 
+| Question (collapsed) | Answer (expanded) |
+|---|---|
+| <img src="screenshots/obsidian_mobile_question.png" alt="Obsidian mobile reading mode showing a practice question with options A–D" width="280"> | <img src="screenshots/obsidian_mobile_answer.png" alt="Obsidian mobile reading mode showing the expanded Answer & Explanations callout with per-option explanations" width="280"> |
+
 ---
 
 ## GitHub web UI
