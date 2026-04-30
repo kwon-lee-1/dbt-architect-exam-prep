@@ -79,6 +79,31 @@ git clone https://github.com/kwon-lee-1/dbt-architect-exam-prep.git
 | 7 | Setting up a dbt Mesh and leveraging cross-project references |
 | 8 | Configuring and using dbt Catalog |
 
+## Interactive Quiz
+
+A self-contained quiz built from all 234 practice questions. No install required — runs in any browser.
+
+**Generate and open:**
+
+```bash
+cd interactive_exam && python build_quiz.py
+```
+
+The script builds `quiz.html` and opens it in your default browser automatically.
+
+**Features:**
+- One question at a time — answer hidden until you submit
+- Color-coded feedback with per-option explanations and 💡 key rule after each submit
+- Filter by topic or High-Yield only (81 questions)
+- Shuffle mode for randomized practice
+- Score tracker and progress bar
+- Keyboard shortcuts: `1`–`5` select options · `Enter` submit · `Enter` / `→` next
+
+> [!note]
+> `quiz.html` is a generated file — re-run `python build_quiz.py` if you add or edit questions. Python stdlib only, no dependencies.
+
+---
+
 ## Audio Files
 
 Audio versions of each topic (MP3) are not committed to this repo due to file size. Generate your own with [Microsoft Edge TTS](https://github.com/rany2/edge-tts):
