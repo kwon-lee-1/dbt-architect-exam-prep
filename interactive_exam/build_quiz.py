@@ -27,7 +27,7 @@ QUESTION_TEXT_RE = re.compile(
     r">\s+\*\*Subdomain[^\n]+\n\n(.*?)\n\n- A\)", re.DOTALL
 )
 OPTION_RE = re.compile(r"^- ([A-E])\)\s+(.+)$", re.MULTILINE)
-CORRECT_RE = re.compile(r">\s+\*\*✅ Correct:\s+([A-E,\s]+)\*\*")
+CORRECT_RE = re.compile(r">\s+\*\*✅ Correct:\s+([^*]+)\*\*")
 EXPL_ROW_RE = re.compile(
     r"^\s*>\s+\|\s+\*\*([A-E])\)\s+([^*]+)\*\*\s+\|\s+(.+)$", re.MULTILINE
 )
@@ -38,7 +38,8 @@ KEYRULE_RE = re.compile(
 
 # ── Parser ─────────────────────────────────────────────────────────────────────
 
-def parse_block(block, file_id, topic_num, topic_name):
+def parse_block(block: str, file_id: str, topic_num: str, topic_name: str) -> dict | None:
+    """Parse a single question block into a question dict, or None if not a valid question."""
     qn_m = QN_RE.search(block)
     if not qn_m:
         return None
@@ -59,7 +60,7 @@ def parse_block(block, file_id, topic_num, topic_name):
 
     correct_m = CORRECT_RE.search(block)
     correct_raw = correct_m.group(1).strip() if correct_m else ""
-    correct_answers = [x.strip() for x in correct_raw.split(",")] if correct_raw else ["A"]
+    correct_answers = re.findall(r"[A-E]", correct_raw) if correct_raw else ["A"]
 
     explanations = {}
     for m in EXPL_ROW_RE.finditer(block):
@@ -89,7 +90,8 @@ def parse_block(block, file_id, topic_num, topic_name):
     }
 
 
-def parse_file(path):
+def parse_file(path: Path) -> list[dict]:
+    """Parse all question blocks from one q*.md file."""
     content = path.read_text(encoding="utf-8")
     file_id = path.stem.split("_")[0]
 
@@ -108,7 +110,8 @@ def parse_file(path):
     return questions
 
 
-def validate(questions):
+def validate(questions: list[dict]) -> None:
+    """Exit with an error message if any question has missing or inconsistent fields."""
     errors = []
     for q in questions:
         qid = q["id"]
@@ -355,7 +358,8 @@ body {
   font-family: inherit;
   transition: background 0.12s;
 }
-.btn-next:hover { background: #15803d; }
+.btn-next:hover:not([disabled]) { background: #15803d; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
 .kbd-hint { text-align: center; font-size: 11px; color: #d1d5db; margin-top: 14px; }
 .end-wrap { text-align: center; padding: 60px 24px; }
 .end-score { font-size: 56px; font-weight: 700; line-height: 1; color: #111827; margin-bottom: 8px; }
@@ -391,12 +395,13 @@ a { color: #2563eb; }
   <div class="header-top">
     <span class="score-badge" id="score-badge">Score: —</span>
     <div class="progress-wrap">
-      <div class="progress-bar" id="progress-bar"></div>
+      <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
     </div>
   </div>
   <div class="header-controls">
+    <label for="filter-select" class="sr-only">Filter questions</label>
     <select id="filter-select"></select>
-    <button id="shuffle-btn">Shuffle: OFF</button>
+    <button id="shuffle-btn" aria-pressed="false">Shuffle: OFF</button>
   </div>
 </div>
 
@@ -440,7 +445,10 @@ function md(text) {
   return esc(text)
     .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, function(_, text, url) {
+      const safe = /^(https?:|mailto:|\\.\\.?\\/|#)/i.test(url) ? url : '#';
+      return '<a href="' + safe + '" target="_blank" rel="noopener">' + text + '</a>';
+    });
 }
 
 // ── Filter / shuffle ──────────────────────────────────────────────────────────
@@ -462,7 +470,9 @@ function renderHeader() {
   document.getElementById('score-badge').textContent =
     total === 0 ? 'Score: —' : 'Score: ' + ok + '/' + total + ' (' + pct + '%)';
   const progress = state.qs.length ? (state.idx / state.qs.length * 100) : 0;
-  document.getElementById('progress-bar').style.width = progress + '%';
+  const bar = document.getElementById('progress-bar');
+  bar.style.width = progress + '%';
+  bar.setAttribute('aria-valuenow', Math.round(progress));
 }
 
 // ── Question card ─────────────────────────────────────────────────────────────
@@ -660,6 +670,7 @@ document.addEventListener('DOMContentLoaded', function() {
     state.shuffle = !state.shuffle;
     shuffleBtn.textContent = 'Shuffle: ' + (state.shuffle ? 'ON' : 'OFF');
     shuffleBtn.classList.toggle('on', state.shuffle);
+    shuffleBtn.setAttribute('aria-pressed', state.shuffle);
     applyFilter();
     renderQ();
   });
@@ -674,7 +685,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
+    """Parse all practice exam files, generate quiz.html, and open it in the browser."""
     files = sorted(EXAM_DIR.glob("q*.md"))
     if len(files) != 12:
         print(f"Warning: expected 12 files, found {len(files)}")
