@@ -9,7 +9,7 @@ Community study materials for the **dbt Architect certification exam**. Built fr
 
 ```bash
 # Clone (recommended — get updates with `git pull`)
-git clone https://github.com/<owner>/<repo>.git
+git clone https://github.com/kwon-lee-1/dbt-architect-exam-prep.git
 
 # Or download a one-time zip from the GitHub UI:
 # green "Code" button → "Download ZIP"
