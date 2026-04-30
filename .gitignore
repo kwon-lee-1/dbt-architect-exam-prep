@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Claude Code local config
+.claude/
+
+# Audio files (too large for git — host externally)
+audio/
+dbt architect audio/
+*.mp3
+
+# Internal session notes
+claude_session_history.md
+
+# Backup / original drafts (use git history instead)
+*_original.md
+
+# Third-party / official study guide PDFs — do not redistribute
+*.pdf
+
+# Obsidian vault config (defensive — not currently present)
+.obsidian/
+
+# IDE / OS noise
+.idea/
+.vscode/
+Thumbs.db
