@@ -28,7 +28,7 @@ git clone https://github.com/kwon-lee-1/dbt-architect-exam-prep.git
 
 ---
 
-## Practice Exam — 234 Questions
+## Practice Exam — 227 Questions
 
 > [!note]
 > **Scope and intent.** Topics 1–8 mirror the official exam outline (see [`exam_topics.md`](exam_topics.md)). Topics 9–11 (Hooks & Operations, dbt Commands, Model Governance) were added based on focused topics I saw on the actual exam and thought it helpful to add specific notes. These practice questions are **not meant to replicate exam questions** — they're written to help you study each topic in the format and depth the real exam uses.
@@ -46,9 +46,9 @@ Sync the vault to your phone for on-the-go practice — answers stay collapsed i
 |---|---|---|---|
 | 1 | Warehouse Connections | [q01_warehouse_connections.md](practice_exam/q01_warehouse_connections.md) | 20 |
 | 2 | Git Connections | [q02_git_connections.md](practice_exam/q02_git_connections.md) | 20 |
-| 3 | Environments & Schema Generation | [q03_environments.md](practice_exam/q03_environments.md) | 20 |
+| 3 | Environments & Schema Generation | [q03_environments.md](practice_exam/q03_environments.md) | 21 |
 | 4 | Jobs & CI/CD | [q04_jobs_cicd.md](practice_exam/q04_jobs_cicd.md) | 20 |
-| 4c | Blue/Green Deployments | [q05_blue_green.md](practice_exam/q05_blue_green.md) | 20 |
+| 4c | Blue/Green Deployments and `dbt clone` | [q05_blue_green.md](practice_exam/q05_blue_green.md) | 12 |
 | 5 | Security & Licenses | [q06_security_licenses.md](practice_exam/q06_security_licenses.md) | 22 |
 | 6 | Monitoring & Alerting | [q07_monitoring_alerting.md](practice_exam/q07_monitoring_alerting.md) | 20 |
 | 7 | dbt Mesh & Cross-Project Refs | [q08_dbt_mesh.md](practice_exam/q08_dbt_mesh.md) | 23 |
@@ -56,7 +56,7 @@ Sync the vault to your phone for on-the-go practice — answers stay collapsed i
 | 9 | Hooks & Operations | [q10_hooks_operations.md](practice_exam/q10_hooks_operations.md) | 20 |
 | 10 | dbt Commands | [q11_dbt_commands.md](practice_exam/q11_dbt_commands.md) | 21 |
 | 11 | Model Governance | [q12_model_governance.md](practice_exam/q12_model_governance.md) | 5 |
-| | **Total** | | **234** |
+| | **Total** | | **227** |
 
 ### High-Yield Topics Covered (⭐)
 - Cross-project environment resolution table (Mesh)
@@ -65,10 +65,10 @@ Sync the vault to your phone for on-the-go practice — answers stay collapsed i
 - CI job: temp schema lifecycle, smart cancellation, no run slots
 - Command ordering: `dbt build` before `dbt sl validate`; checkbox vs step
 - Service token: one-time visibility, IP 403, rotation pattern
-- Webhook: 5-failure silent auto-disable; `errored` vs `completed` timing
+- Webhook: archived after 1,000 consecutive failures or 7 days; `errored` vs `completed` timing
 - `--state` + `--target-path` manifest overwrite
 - Advanced CI: `event_time` false positives, PII cache masking
-- Enterprise+ feature gate (cross-project refs, column lineage, Advanced CI)
+- Plan gates: cross-project refs, project dependencies, column lineage and Advanced CI are Enterprise and Enterprise+; PrivateLink is Enterprise+
 
 ---
 
@@ -87,7 +87,7 @@ Sync the vault to your phone for on-the-go practice — answers stay collapsed i
 
 ## Interactive Quiz
 
-A self-contained quiz built from all 234 practice questions. No install required — runs in any browser.
+A self-contained quiz built from all 227 practice questions. No install required — runs in any browser.
 
 **Generate and open:**
 
@@ -100,7 +100,7 @@ The script builds `quiz.html` and opens it in your default browser automatically
 **Features:**
 - One question at a time — answer hidden until you submit
 - Color-coded feedback with per-option explanations and 💡 key rule after each submit
-- Filter by topic or High-Yield only (81 questions)
+- Filter by topic or High-Yield only
 - Shuffle mode for randomized practice
 - Score tracker and progress bar
 - Keyboard shortcuts: `1`–`5` select options · `Enter` submit · `Enter` / `→` next
