@@ -1,8 +1,23 @@
 # dbt Architect Certification — Study Notes
 
-> Audience: Daily dbt Cloud user. No basics — architect-level gotchas only.
-> Format: Reference notes + Q&A self-test per topic.
-> Exam in ~2 weeks. Prioritize the **High-Yield** section at the bottom.
+> Audience: Daily dbt platform user. Architect-level gotchas only.
+> Format: Reference notes + Gotcha Q&A per topic. Study the **High-Yield** section at the bottom first if time is short.
+
+**Where things are**
+
+| Exam topic | Section here | Practice set |
+|---|---|---|
+| 1 Warehouse connections | Topic 1 | `q01` |
+| 2 Git connections | Topic 2 | `q02` |
+| 3 Environments | Topic 3, 3b (schemas) | `q03` |
+| 4 Jobs | Topic 4 | `q04` |
+| 5 Security and licenses | Topic 5 | `q06` |
+| 6 Monitoring and alerting | Topic 6 | `q07` |
+| 7 dbt Mesh | Topic 7 (includes model governance) | `q08`, `q12` (Topic 11) |
+| 8 Catalog | Topic 8 | `q09` |
+| Extra: Blue/green and `dbt clone` | inside Topic 4 | `q05` (Topic 4c) |
+| Extra: dbt commands and node selection | inside Topic 4 | `q11` (Topic 10) |
+| Extra: Hooks and operations | Topic 9 | `q10` (Topic 9) |
 
 ---
 
@@ -10,68 +25,110 @@
 
 ### Reference Notes
 
-- Connections are **account-level**, not project-level — shared across multiple projects
-- Each environment references **exactly one connection** — a single job cannot write to two warehouses simultaneously
-- Dev env and prod env within the same project CAN reference different connections (even different warehouse types), but each environment is single-warehouse
-- The lineage graph in Catalog is **logical** (based on `ref()`/`source()` calls), not physical — it does not show warehouse topology or distinguish which connection ran a model
-- **OAuth (warehouse-native)**: Credential revocation at warehouse immediately takes effect in dbt; preferred over username/password for compliance
-- **IP whitelisting**: dbt publishes static hostnames but underlying IPs are dynamic (cloud infra); always use **hostnames** not raw IPs in firewall rules — or use PrivateLink
-- **PrivateLink**: VPC-to-VPC, no public internet traversal; Enterprise only, region-specific
-- BigQuery and Snowflake support External OAuth (Okta/Entra ID) for Semantic Layer queries
-- Connection testing available in UI before creating jobs — test before scheduling
+**Connections**
+- Connections are **account-level** (Account settings → Connections). Reuse the same one across projects.
+- A connection reaches a project **through an environment**. A project with 2 environments can use 1 or 2 connections (e.g. separate prod from non-prod).
+- One environment = one connection. A single job can't write to two warehouses.
+- Test: use **Test connection** in the setup flow. Most common Snowflake failure: `snowflakecomputing.com` left in the Account field.
 
-**Platform-Specific Connection Details**
+**IP allowlisting**
+- dbt connects from the IPs on the Regions & IP addresses page. Allow them in your firewall and database grants.
+- The docs also say those IPs **can change occasionally** and recommend dbt platform **hostnames** (e.g. `abc123.us1.dbt.com`) as the stable reference. The docs don't reconcile the two. "What stays stable?" → hostnames.
+- Multi-tenant: IPs / CIDR ranges listed per region. Single-tenant / Virtual Private: ask Support for your IPs, use your vanity URL.
+- Find your IPs: Project Settings → Connection → Settings.
+- Allowing the IPs only opens the warehouse connection. Using the dbt API needs `cloud.getdbt.com` allowed.
+
+**Private connectivity (PrivateLink)**
+- **Enterprise+ and Virtual Private** plans.
+- dbt ↔ warehouse without crossing the public internet.
+- dbt and the warehouse must be on the **same cloud** (AWS with AWS, etc.).
+- Env vars aren't supported for private endpoint settings. Use **extended attributes**.
+- With ingress PrivateLink or IP allowlisting, CI hooks may be unavailable and CI jobs can fail silently.
+
+**OAuth overview**
+- OAuth is for **development** (each developer signs in). Deployment jobs use key pair (Snowflake) or service JSON / Workload Identity Federation (BigQuery).
+- Snowflake OAuth and BigQuery OAuth: **Enterprise / Enterprise+**.
+- Support (dbt v2 table): Snowflake and BigQuery = warehouse OAuth ✅ + external OAuth ✅. Databricks = warehouse OAuth ✅, external ❌. Redshift = none. Service-to-service OAuth = ❌ everywhere.
+- **Client ID + Secret** go on the connection: Account settings → Connections → the connection.
+- Every developer must then authenticate in their own **Credentials** before using the IDE.
 
 **Snowflake**
-- Account identifier: **locator format only** (e.g. `db5261993.east-us-2.azure`) — NOT the full domain URL (`db5261993.snowflakecomputing.com`) → silent connection failure
-- MFA auth: **development environments only**; Snowflake is phasing out single-factor auth (Nov 2025)
-- Key pair auth for **Fusion engine**: must be **PKCS#8 AES-256** format — 3DES or headerless keys rejected with "Could not deserialize key data"
-- Custom domain: use extended attribute `host: https://custom_domain.com` (not the account locator)
-- JWT token error = no Snowflake response within 60 seconds; add retry logic
-- Minimum permissions required: `USAGE` on warehouse/database/schema; `SELECT`, `CREATE TABLE/VIEW`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `DROP`
+- Account: `db5261993` or `db5261993.east-us-2.azure`. ❌ `db5261993.eu-central-1.snowflakecomputing.com` (test fails).
+- Role is mandatory. Database and Warehouse are set on the connection.
+- Custom domain: extended attribute `host: https://custom_domain.com`. Can conflict with Snowflake OAuth over PrivateLink → use External OAuth.
+- **Auth:**
+  - Key pair = default for new credentials (dev + deploy).
+  - New username/password credentials **can't be created**. Existing ones can't be saved until switched to key pair or OAuth.
+  - Existing username/password + MFA: dev and deploy (`authenticator: username_password_mfa` in the dev environment).
+  - Snowflake OAuth: dev only, Enterprise.
+- **Key pair:** public key on the Snowflake user (`alter user x set rsa_public_key='...'`). Private key + passphrase in dbt Credentials, **with the BEGIN/END lines**. The private key can't come from an env var.
+- dbt v2 (Fusion): PKCS#8 + AES-256. No 3DES, no headerless keys.
+- **"Could not deserialize key data"** = bad paste (missing dashes or BEGIN/END lines). Check the key in a text editor.
+- **"JWT token is invalid"** = no answer from Snowflake within 60 seconds, or wrong public key. dbt needs to retry; check the public key.
+- Minimum grants: `USAGE` on warehouse, database, schema; `SELECT`; `CREATE TABLE`, `CREATE VIEW` on schema; `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `DROP`. Plus metadata access (`USAGE` on INFORMATION_SCHEMA, `DESCRIBE TABLE`, `SHOW OBJECTS`). `CREATE SCHEMA` / `CREATE DATABASE` only if dbt creates them.
+
+**Snowflake OAuth setup**
+1. Copy the **Redirect URI** from dbt (project → Development connection → OAuth method Snowflake SSO).
+2. In Snowflake (ACCOUNTADMIN or a role with global `CREATE INTEGRATION`): `CREATE SECURITY INTEGRATION ... TYPE = OAUTH ... OAUTH_REDIRECT_URI = '<URI>'`. Add `OAUTH_USE_SECONDARY_ROLES = 'IMPLICIT'` if you use secondary roles.
+3. Get the client ID and secret with `system$show_oauth_client_secrets('DBT_CLOUD')`.
+4. dbt: Account settings → Connections → edit the connection → enter them → Save.
+5. Users: Credentials → **Connect to Snowflake Account**.
 
 **BigQuery**
-- OAuth (Client ID + Secret): development environments + **Enterprise tier only**
-- After org-level OAuth setup, end users link personal BigQuery accounts via Profile Settings
-- Redirect URI pattern: `https://YOUR_ACCESS_URL/complete/bigquery`
+- Dev: Service JSON or OAuth (Enterprise). Deployment: Service JSON or Workload Identity Federation (Enterprise, Entra ID is the only IdP).
+- Keyfile: upload the JSON, or give it as a base64 string.
+- Pick the **BigQuery** schema option for new connections. "BigQuery (Legacy)" is deprecated.
+- **OAuth setup:**
+  1. Google Cloud: APIs & Services → Credentials → Create OAuth client ID → Web application. Paste the **Redirect URI** copied from dbt (connection → Development OAuth section).
+  2. Copy the client ID + secret into dbt: Account settings → Connections → the connection → **OAuth 2.0 Settings** (token URI default `https://oauth2.googleapis.com/token`).
+  3. Users: Account settings → Credentials → project → Authentication Method = **Native OAuth** → **Connect to BigQuery**.
+- `403 Account restricted`? A Google Workspace admin must mark the client ID **Trusted**.
 
 **Databricks**
-- `dbt-spark` connector is **deprecated** — must use `dbt-databricks`
-- Unity Catalog requires **dbt 1.1+**; Python models require **dbt 1.3+**
-- Three-part naming enabled by Unity Catalog: `catalog.schema.model`
-- Required fields: Server Hostname, HTTP Path; Catalog (optional, for Unity Catalog)
-- Unity Catalog permissions: `USE CATALOG`, `USE SCHEMA`, `SELECT`, `CREATE TABLE`, `CREATE VIEW`, `MODIFY`
+- Use **`dbt-databricks`**. Connecting via `dbt-spark` is deprecated.
+- Required: **Server Hostname**, **HTTP Path**. Catalog is optional (Unity Catalog).
+- Unity Catalog = dbt 1.1+. Python models = dbt 1.3+.
+- Unity Catalog privileges: `USE CATALOG`, `USE SCHEMA`, `SELECT`, `CREATE TABLE`, `CREATE VIEW`, `MODIFY` (+ `CREATE SCHEMA` if dbt creates schemas).
+- Hive metastore: `USAGE`, `SELECT`, `CREATE`, `MODIFY`.
 
-**Managed Repositories**
-- dbt-hosted repo for trial/POC only — no Git workflows, no PRs, no branching
-- **NOT recommended for production** (dbt Labs explicitly advises against this)
-- Can be exported to a self-hosted repository at any time
+**Managed repository**
+- A way to trial dbt without your own repo. You **can't use Git features like pull requests**. dbt Labs **recommends against** using it in production.
+- You can **export** it any time: project settings → repo link → Deploy key → Download repository (needs write access to Git repositories).
 
 ### Gotcha Q&A
 
-**Q: A new region was added to your dbt Cloud account and your Snowflake firewall suddenly blocks connections. What went wrong?**
-A: IP addresses were hardcoded in the firewall rule instead of using dbt-provided hostnames. dbt's underlying IPs are dynamic; hostnames are stable.
+**Q: A new Snowflake connection test fails. The Account field is `db5261993.snowflakecomputing.com`. Why?**
+A: The Account value still includes `snowflakecomputing.com`. Use `db5261993` or `db5261993.east-us-2.azure`.
 
-**Q: You rotate a Snowflake user's password. dbt jobs fail immediately. Why, and what's the fix?**
-A: The connection uses username/password auth. Update the credential in Account Settings → Connections. OAuth avoids this — revocation is warehouse-side and requires no dbt config changes.
+**Q: You get `JWT token is invalid`. Why?**
+A: Snowflake didn't answer within 60 seconds, or the public key was entered wrong. Retry and check the public key.
 
-**Q: A developer connects via OAuth but a service token cannot. Why?**
-A: OAuth in dbt is user-level (personal credentials in Profile Settings). Service tokens use service account or key-based auth at the connection level, not OAuth.
+**Q: You get "Could not deserialize key data". Why?**
+A: The private key was pasted wrong: missing dashes or BEGIN/END lines. Check it in a text editor.
 
-**Q: You set up Snowflake key pair auth for the Fusion engine but get "Could not deserialize key data." Why?**
-A: Fusion requires PKCS#8 AES-256 format. The key was likely generated in legacy 3DES format or is missing the BEGIN/END headers. Regenerate in the correct format.
+**Q: Can you create new Snowflake credentials with username and password?**
+A: No. Key pair is the default. Existing password credentials must switch to key pair or OAuth before they can be saved.
 
-**Q: A Databricks project was built using dbt-spark. Should anything change?**
-A: Yes — dbt-spark is deprecated. Migrate to dbt-databricks. Also verify dbt version: Unity Catalog requires 1.1+, Python models require 1.3+.
+**Q: Can a production job use Snowflake OAuth?**
+A: No. Snowflake OAuth is development only (Enterprise). Deployment uses key pair.
 
-**Q: You used a managed repository to prototype a project. The team is ready for production. What must change?**
-A: Export the managed repo and migrate to a self-hosted Git repository. Managed repos have no PR workflows, branching, or version history — they're not suitable for production.
+**Q: Where do the BigQuery OAuth Client ID and Secret go?**
+A: Account settings → Connections → the connection → OAuth 2.0 Settings. Developers then connect under Credentials → Native OAuth.
 
-**Q: How many warehouse connections can a single dbt project use? Can different environments use different warehouse types?**
-A: A dbt project uses **one connection per environment**. Dev and prod environments within the same project CAN point to different connections (e.g., one Snowflake connection for dev, a different Snowflake connection for prod), but each environment uses exactly one connection at a time. You cannot run a single job that writes to two different warehouses simultaneously. However, you can have environments in the same project pointing to entirely different warehouse types (Snowflake dev, Databricks prod) — though this is unusual and each environment's connection type is immutable after creation.
+**Q: A team allowlists dbt IPs and worries they'll change. What do the docs recommend?**
+A: Use dbt platform hostnames as the stable reference. Single-tenant: ask Support for IPs.
 
-**Q: A project uses one Snowflake connection for dev and a different Snowflake connection for prod. Can both be viewed in the same lineage graph in dbt Catalog?**
-A: Yes — the lineage graph in dbt Catalog/Explorer is **logical**, not physical. It shows model dependencies based on `ref()` and `source()` calls in the project DAG, not the physical warehouse topology. The graph reflects a single project's model relationships regardless of which connections the environments use. Cross-project lineage (Enterprise+) extends this across projects via the metadata service. The lineage graph does NOT show cross-warehouse data movement or distinguish which physical warehouse a model ran on.
+**Q: Which plans get private connectivity (PrivateLink)?**
+A: Enterprise+ and Virtual Private. dbt and the warehouse must be on the same cloud.
+
+**Q: A Databricks project uses `dbt-spark`. What changes?**
+A: Move to `dbt-databricks`. Unity Catalog needs dbt 1.1+, Python models 1.3+.
+
+**Q: A team prototyped on a managed repo and is going to production. What now?**
+A: Export it and move to your own Git host. dbt Labs recommends against managed repos in production, and you can't use pull requests.
+
+**Q: How many connections can one project use?**
+A: One per environment. A project with 2 environments can use 1 or 2 connections. A single job can't write to two warehouses.
 
 ---
 
@@ -79,40 +136,70 @@ A: Yes — the lineage graph in dbt Catalog/Explorer is **logical**, not physica
 
 ### Reference Notes
 
-- **Native GitHub App** (recommended): Requires GitHub org owner AND dbt Account Admin/Owner to install; enables CI triggers and PR status checks
-- **Git URL / deploy key method**: Required for on-prem GitHub, GitHub Enterprise on non-`ghe.com` domains; CI features limited
-- **Azure DevOps**: Native integration is Enterprise-only; Starter/Developer must use deploy keys (no auto CI triggers)
-- **Repository name is case-sensitive** in dbt UI — mismatch causes silent clone failures
-- Each developer must authenticate their personal GitHub profile separately even after org-level setup
-- BitBucket/AWS CodeCommit: No native integration → Git clone method + dbt Admin API to manually trigger CI
+**Which provider gets which method**
 
-**GitLab Specifics**
-- OAuth app requires **`api` scope** (not just `read_api`)
-- Repos must belong to a **GitLab group** — personal user account repos do NOT work
+| Provider | Native integration | Plan | Automated CI |
+|---|---|---|---|
+| GitHub | Yes (dbt GitHub App) | All plans | Yes |
+| GitLab | Yes | All plans | Yes (but see GitLab Free below) |
+| Azure DevOps | Yes | **Enterprise / Enterprise+ only** | Yes |
+| Bitbucket, AWS CodeCommit | No | — | No — use git clone + Admin API |
+
+- Azure DevOps on Starter/Developer: deploy key only. You can develop, but no automated CI.
+
+**GitHub**
+- The **GitHub org owner** installs the dbt GitHub App. That person also needs **Owner or Account Admin** in dbt.
+- Native app lets you import repos in a few clicks, clone over **HTTPS** (not SSH), and trigger CI when a PR is opened.
+- **Repo name is case-sensitive** and must match the URL exactly (`MyRepo`, not `myrepo`) — otherwise clone errors or job failures.
+- Linking your personal GitHub profile: **required on Enterprise/Enterprise+** (the IDE checks each developer's read/write access). On Starter it's optional but recommended.
+- GitHub Enterprise Cloud on a **`ghe.com`** domain: the shared dbt app can't reach it. Enterprise/Enterprise+ → register a **custom GitHub app** (private beta). Other plans → git URL.
+- On-prem GitHub (GitHub Enterprise Server): same rule — custom GitHub app (private beta) on Enterprise/Enterprise+, git URL on other plans.
+- **One GitHub app per dbt account**, not per project. Switching from the shared app to a custom app breaks every profile link — everyone has to relink.
+
+**Git clone (deploy key)**
+- Use it when the provider has no native integration (Bitbucket, AWS CodeCommit, Azure DevOps Server), or when you're on a plan that can't use the native one.
+- The URL must be **SSH** (`git@github.com:org/repo.git`). dbt can't clone over HTTPS.
+- **Each dbt project gets its own deploy key**, even if two projects use the same repo. The key needs **read and write** access.
+- **No automated CI and no PR status updates.** For Bitbucket/CodeCommit you trigger CI with the **dbt Admin API** (Enterprise/Enterprise+ only). dbt will **not** auto-delete the temp CI schema for API-triggered runs, because that cleanup depends on Git provider webhooks (native integrations only).
+- AWS CodeCommit extras: IAM user with `AWSCodeCommitPowerUser`, dbt Support finishes the setup, and the default branch is `master` — set it as the custom branch.
+
+**GitLab**
+- OAuth app uses the **`api` scope**
+- Repos must belong to a **GitLab group** — dbt will not read repos tied to a personal user account
 - **Maintainer role** required to set up the connection
-- Enterprise: admin creates group-owned OAuth app → adds Application ID + Secret to Account Settings → Integrations
-- Developer/Starter: users connect personal accounts via Profile → Linked Accounts
-- **GitLab Free Plan**: CI jobs trigger but **status is NOT posted back** to Merge Requests — no green/red check in the GitLab UI
+- Enterprise: admin creates a group-owned OAuth app → adds Application ID + Secret in Account settings → Integrations
+- Developer/Starter: users connect their own account via Personal profile → Linked accounts
+- When you connect a repo, dbt sets up a **webhook** (triggers CI jobs) and a **project access token** (sends job status back to GitLab).
+- **GitLab Free**: MRs trigger CI jobs, but job status is **NOT reported back** to GitLab. Native CI needs a paid or self-hosted GitLab that supports **webhooks and project access tokens**.
+- CI doesn't trigger at all? Check the webhook in GitLab (Settings → Webhooks): enabled, correct URL and secret.
+- **Self-hosted GitLab** can only be connected on **Enterprise** plans (the redirect URL can only be customized there).
 
-**Azure DevOps Specifics**
-- **Enterprise/Enterprise+ only** for native integration — Starter/Developer cannot use it at all
-- Azure DevOps **Server (on-premise)**: no native integration — must use git URL import regardless of plan
-- Recommended auth method: **Service Principal** (Service User is legacy)
-- Requires coordination across three admin teams: dbt admins + Azure Entra ID admins + Azure DevOps admins
+**Azure DevOps**
+- Native integration is **Enterprise/Enterprise+ only**
+- Azure DevOps **Server (on-prem)**: no native integration. Use git URL import.
+- Recommended auth: **Service Principal** (Service User is legacy)
+- Needs three admin teams: dbt, Azure Entra ID, and Azure DevOps
+- PR status stuck on "pending"? Check the branch policy setting **"Reset status whenever there are new changes"** (under Status checks → Reset conditions). It can stop dbt from updating the status.
 
 ### Gotcha Q&A
 
-**Q: You set up GitHub native integration but CI jobs aren't triggering on PRs. What's the likely cause?**
-A: Either the dbt GitHub App wasn't installed by the org owner, or developers haven't authenticated their personal GitHub profiles. Both are required independently.
+**Q: You set up GitHub native integration but CI jobs aren't triggering on PRs. What do you check?**
+A: Make sure the dbt GitHub App was installed by a GitHub org owner, and that the CI job has **Triggered by pull requests** on (draft PRs also need **Run on draft pull requests**). Linking personal profiles is about IDE/CLI read/write access, not CI triggers.
+
+**Q: Your org uses GitHub Enterprise Cloud on a `ghe.com` domain and has the Enterprise plan. The dbt GitHub App can't connect. What now?**
+A: The shared dbt app can't reach `ghe.com`. Register a custom GitHub app (private beta, Enterprise/Enterprise+) and use the native integration.
 
 **Q: CI runs work on GitHub but an Azure DevOps repo on a Starter plan doesn't trigger CI. Why?**
-A: Azure DevOps native integration is Enterprise-only. On Starter, only deploy keys are available — which don't support automatic CI triggers.
+A: Azure DevOps native integration is Enterprise-only. On Starter you can only use a deploy key, which gives you no automated CI (you can still develop).
 
-**Q: A GitLab user set up a repo under their personal account and connected it to dbt. CI triggers fire but nothing runs. Why?**
-A: GitLab repos must belong to a GitLab **group**, not a personal user account. Repos in personal accounts are not supported for the native integration.
+**Q: A team uses Bitbucket and wants CI on their PRs. How?**
+A: Bitbucket has no native integration. Connect with git clone + deploy key, then trigger CI jobs through the dbt Admin API (Enterprise/Enterprise+ only).
 
-**Q: You're on GitLab Free Plan. CI runs succeed in dbt but developers see no status checks on their MRs. Why?**
-A: GitLab Free Plan does not allow dbt to post CI status back to Merge Requests. Upgrade to GitLab Pro or switch to GitHub/Azure DevOps for status feedback.
+**Q: A user created a GitLab repo under their personal account and tried to connect it to dbt. Why won't it work?**
+A: dbt will not read repos tied to a user. The repo must belong to a GitLab **group**.
+
+**Q: You're on GitLab Free. CI runs succeed in dbt but developers see no status on their MRs. Why?**
+A: On GitLab Free, MRs trigger CI but dbt can't report the job status back. Use a paid or self-hosted GitLab account that supports webhooks and project access tokens.
 
 ---
 
@@ -120,128 +207,134 @@ A: GitLab Free Plan does not allow dbt to post CI status back to Merge Requests.
 
 ### Reference Notes
 
-**Environment Types — Counts Per Project**
+**Environment types (per project)**
 
-| Type | Count | Purpose |
+| Type | Count | Used for |
 |---|---|---|
-| Development | Exactly 1 | Drives IDE/CLI; sets branch devs fork from |
-| Production | Exactly 1 | Source of truth for Catalog and cross-project ref resolution |
-| Staging | Exactly 1 | Pre-prod validation; critical safety layer for dbt Mesh |
-| General | Unlimited | Non-critical or experimental jobs |
+| Development | 1 | Studio IDE / CLI settings |
+| Production | 1 | Project "source of truth". Needed for Catalog and cross-project refs |
+| Staging | 1 | Pre-prod. Optional, but changes how cross-project refs resolve (see below) |
+| General | Any number | Other deployment work (testing, experiments) |
 
-**Custom Branches**
-- Dev environment: controls which branch developers branch **from** in the IDE
-- Deployment environments: controls which branch is **cloned** during job execution — NOT merged
-- A custom branch on a deploy environment does not auto-merge from main
+- Deleting an environment **deletes its jobs**. Move them first. Can't be undone.
+- Custom branch: **dev** env = branch devs create branches from and open PRs against. **Deploy** env = branch **cloned** when the job runs (no merge).
 
-**Environment Variables — Scoping**
-- Precedence (most specific wins): job-level > environment-level > project-level > account-level
-- **Extended attributes** (YAML snippets for `profiles.yml`): only top-level keys are accepted
-- Nested overrides require providing the **entire parent key as a JSON block** — partial nested overrides are silently ignored
+**Connections, profiles and credentials**
+- Deployment environments get their connection + credentials from a **connection profile**. Profiles are created at the **project** level and apply to **deployment environments only** (not dev).
+- To change it: edit the environment → swap icon → Assign profile → Save.
+- ⚠ Older study material says "an environment's connection can't be changed, create a new one". The current docs don't say that.
+- Connection section in environment settings:
+  - Snowflake: Role, Database, Warehouse
+  - Databricks: Catalog (optional)
+  - Postgres, Redshift, BigQuery, Spark: section not shown → values come from the project connection → override with **extended attributes**
 
-**Service Accounts**
-- Use when no human identity should own a connection (prod pipelines, CI)
-- Key pair authentication must be rotated via the **dbt Admin API** — no UI path
+**Snowflake credentials**
+- **Key pair is the default** for new credentials (dev and deploy). New password credentials can't be created. Existing ones must move to key pair or OAuth before they can be saved.
+- Snowflake OAuth: development only, Enterprise.
+- Public key goes on the **Snowflake user** (`alter user x set rsa_public_key='...'`). Private key + passphrase go in the dbt **Credentials** page, with the BEGIN/END lines.
+- The private key **can't come from an env var**.
+- dbt v2 (Fusion): PKCS#8 with AES-256. No 3DES, no headerless keys.
+- ⚠ Rotating the key via the Admin API is an exam objective, but the docs describe no procedure. Read the Admin API v3 credentials endpoints.
 
-**Key Pair Authentication Rotation (via API)**
-- Flow: generate new key pair → POST new public key to API → verify → invalidate old key
+**Service tokens (service accounts)**
+- Belong to the **account**, not a user. For system-level integrations that don't run on behalf of one person.
+- Enterprise/Enterprise+: any permission set. Developer/Starter: Semantic Layer set only.
+- Created by an account admin. Shown once. 403 = IP allowlist problem.
+
+**Access control by environment**
+- Admins give a **group** write access by environment **type** (not a single environment): Account settings → Groups & Licenses.
+- Only these permission sets support it: Database admin, Git admin, Team admin, Analyst, Developer. Nothing selected = read-only.
+- Developer defaults to **All environments**. Check it.
+- Typical setup: lock Production, allow Development, Staging, General.
+
+**Environment variables**
+- Order, highest first: **job override / personal (IDE) override** > **environment** > **project default** > default argument in `env_var()`.
+- There is **no account-level** scope.
+- Names must start with `DBT_`, `DBT_ENV_SECRET_` or `DBT_ENV_CUSTOM_ENV_`.
+- `DBT_ENV_SECRET_` values are scrubbed from logs and never shown in the UI or artifacts.
+- No project default and no job value → compile error "Env var required but not provided".
+- Can't be used in the Snowflake OAuth account/host field. Use extended attributes there.
+
+**Extended attributes**
+- A `profiles.yml` snippet. Deployment: set on the connection profile. Dev: on the dev environment.
+- **Top-level keys only.** To change a sub-key, give the whole top-level key as a JSON block (e.g. all of BigQuery `keyfile_json`).
+- Overrides environment-level values and env vars. Adds the key if it's missing.
+- They **don't mask secrets**. Use `password: '{{ env_var('DBT_ENV_SECRET_PASSWORD') }}'`.
+- Env vars used here must be **project-scoped**. Environment-scoped ones aren't available in connection tests.
+- Not supported for SSH tunneling.
+
+**Release tracks** (dbt v1)
+
+| Track | What it is | Plans |
+|---|---|---|
+| Latest | Continuous release. **Default** | All |
+| Compatible | Monthly, aligned with open source dbt v1 | Starter and up |
+| Extended | The previous month's Compatible | Enterprise, Enterprise+ |
+| Fallback | The previous month's Extended. Emergency rollback | Enterprise+ |
+
+- dbt v2 (Fusion): Nightly, **Stable (default, weekly)**, Extended (Enterprise+), Fallback (Enterprise+, set in Account settings only).
+- Set per environment. Admins can set the account default for new projects.
+- The docs state no "support window" for any track.
 
 **Deferral**
-- "Deferral environment" provides its latest successful manifest to jobs that reference it
-- If the deferred environment's last run **failed**, deferral breaks — architect must plan a fallback
+- Studio IDE: toggle **Defer to staging/production**. Needs the environment marked as Production and a **successful job run first**.
+- Uses **staging if it exists, otherwise production**. Only one environment per run.
+- Staging exists but never had a deploy job run → IDE defer **doesn't work**.
+- Ref resolution with `--defer`: your own dev relation first. If it doesn't exist, the deferral environment (staging if it exists, otherwise production). `--favor-state` skips the dev check.
+- CLI: defer is on by default. `--no-defer` turns it off. `defer-env-id` picks another environment.
+- Job setting "Compare changes against": No deferral (default) / Environment (recommended) / This Job. CI jobs default to Production.
+- Environment deferral = state from the **latest successful run in that environment**, from any job that updates artifacts there.
 
-**Connection Immutability**
-- Once a connection is assigned to an environment, it **cannot be changed** after the fact
-- To switch warehouse types: create a NEW environment → migrate jobs → delete old environment
-- There is no "edit connection" option on an existing environment
+**Cross-project refs and Staging**
 
-**Default Schema/Dataset per Platform**
+| Downstream environment | Resolves to upstream |
+|---|---|
+| Production | Production |
+| Staging | Staging if it exists, else Production |
+| Development | Staging if it exists, else Production |
 
-| Platform | Configurable Fields | Override Method |
-|---|---|---|
-| Snowflake | Role, Database, Warehouse | Editable in environment UI |
-| Postgres / Redshift | Inferred from project connection | Extended attributes |
-| BigQuery / Spark | Inferred from project connection | Extended attributes |
-| Databricks | Catalog field (Unity Catalog) | Environment UI |
-
-- Best practice: wrap secrets in **environment variables** rather than hardcoding values in extended attributes
-
-**dbt Version Release Tracks (Environment-level)**
-- **Latest**: Always the most recent dbt version; auto-upgraded immediately
-- **Compatible**: Lags behind Latest for stability; recommended for most teams
-- **Extended**: Longest support window; slowest to upgrade; for risk-averse teams
-
-**Staging Environment — Mesh-Specific Benefits**
-- If **Project B** also has a Staging environment, deferral within Project B resolves refs to unbuilt upstream models AND UDFs against that staging environment — not production
-- This preserves clear environment separation without requiring separate projects per team
-- Staging has its own independent view in Catalog (not just a production snapshot)
+- Upstream Staging exists → dbt uses it **right away**, with **no fail-over to Production**, even with zero successful Staging runs. Downstream refs then fail.
+- Safe order: create the environment without marking it Staging → define a job → run it successfully → mark it Staging.
+- Upstream needs: `access: public` models, and a Production environment with a successful job (it produces the `manifest.json`).
+- Staging + deferral (dbt 1.11+): unbuilt upstream models and UDFs in project B resolve to project B's staging, not production.
 
 ### Gotcha Q&A
 
-**Q: You configure an extended attribute to override only a nested key in `profiles.yml`. The override doesn't apply. Why?**
-A: Extended attributes accept top-level keys only. To override a nested value, provide the entire parent block as a JSON object — partial nested overrides are silently ignored.
+**Q: You override one nested key in extended attributes and it doesn't apply. Why?**
+A: Only top-level keys are accepted. Give the whole top-level key as a JSON block.
 
-**Q: A CI job's deferral is configured against Production, but the last production run failed 3 days ago. The CI job builds the entire DAG instead of just modified models. Why?**
-A: Deferral requires a **successful** manifest from the reference environment. With no recent successful run, there's no valid manifest — falls back to full DAG build.
+**Q: Which environment variable wins: project `analytics`, environment `analytics_staging`, job `analytics_ci`?**
+A: `analytics_ci`. Job > environment > project. No account level.
 
-**Q: You delete a deployment environment. What happens to jobs configured in that environment?**
-A: Jobs are deleted with the environment unless transferred first. Always transfer jobs before deleting an environment.
+**Q: A dev IDE job resolves a cross-project ref. The upstream project has no Staging. Where does it resolve?**
+A: Upstream **Production**.
 
-**Q: A job uses `--state` for deferral but the manifest keeps getting overwritten before comparison. What causes this?**
-A: `--state` and `--target-path` point to the same directory. dbt overwrites `manifest.json` during parse before comparison. Fix: use separate directories, or pass `--no-write-json`.
+**Q: The upstream project has Staging, but it never had a successful run. Does it fall back to Production?**
+A: No. It uses Staging and the ref fails.
 
-**Q: A dev IDE job resolves cross-project refs. The upstream project has NO staging environment configured. Where does it resolve?**
-A: To the upstream project's **Production** environment. When no staging environment exists, dev cross-project ref resolution falls back to Production. This is the **only** scenario where Production is used as the resolution target for a dev IDE job.
+**Q: You add a Staging environment to the upstream project and downstream dev jobs break. Fix?**
+A: Staging is used immediately. Next time: create it without marking Staging, run a job successfully, then mark it Staging. Now: run a successful deploy job in it.
 
-**Q: A dev IDE job resolves cross-project refs. The upstream project has a Staging environment configured, but it has never had a successful job run. Where does it resolve — and does it fall back to Production?**
-A: dbt routes to **Staging — not Production**. Once a staging environment exists and is linked to the metadata service, dbt always routes to it regardless of whether any runs have succeeded. Because no successful run has populated the staging metadata, the cross-project ref resolution **fails** outright — it does not silently fall back to Production. Critical gotcha: adding a staging environment with no successful runs immediately breaks downstream dev IDE jobs. **Fix**: run at least one successful deployment job in Staging immediately after creating it.
+**Q: A CI job compares changes against Production. Which run does it use?**
+A: The latest successful run in Production, from any job that updates artifacts there. It targets the environment, not a job ID.
 
-**Q: A developer's IDE job references an upstream model in Project B. Project B has a staging environment. The specific upstream model hasn't been built in staging yet. Does dbt fall back to Production for that model?**
-A: No. dbt routes to **Staging** for all cross-project ref resolution once a staging environment exists. Whether resolution succeeds depends on whether staging has a successful run with metadata. Fallback to Production only occurs when the staging environment **type doesn't exist at all** — not when a specific model is absent from it.
+**Q: What happens to jobs when you delete an environment?**
+A: They're deleted too. Move them first.
 
-**Q: You add a Staging environment to an upstream project in your Mesh. Developer jobs immediately start failing to resolve cross-project refs. Why?**
-A: Once a staging environment is created and linked to the metadata service, dbt **immediately** routes all dev cross-project ref resolution to it — with no fallback to Production, even though no jobs have run yet. The staging environment has no metadata, so resolution fails. This is not a gradual transition. **Fix**: run at least one successful deployment job in the new staging environment before relying on downstream dev IDE jobs.
+**Q: A team needs a deployment environment to use different credentials. How?**
+A: Assign a different connection profile in the environment settings.
 
-**Q: A team wants to switch their production environment from Redshift to Snowflake. How do you do this?**
-A: You cannot change the connection on an existing environment. Create a new environment pointing to the Snowflake connection, migrate all jobs to it, then delete the old Redshift environment.
+**Q: Where do the Snowflake key pair keys go?**
+A: Public key on the Snowflake user. Private key + passphrase in dbt Credentials. Not in an env var.
 
-**Q: What's the difference between the Compatible and Extended release tracks?**
-A: Compatible lags slightly behind Latest for stability — good for most teams. Extended has the longest support window and upgrades last — for teams with strict change management. Never use Latest in production if you need predictable versioning.
+**Q: Where do you put a secret used in extended attributes?**
+A: A project-scoped `DBT_ENV_SECRET_...` env var, referenced with `env_var()`. Extended attributes don't mask secrets.
 
----
+**Q: Max stability on dbt v1, Enterprise plan. Which release track?**
+A: Extended (the previous month's Compatible). Latest is the default.
 
-### Environment UI — All Configurable Fields
-
-**Core fields (all environment types):**
-
-| Field | Notes |
-|---|---|
-| Environment name | Required |
-| Environment type | Deployment / Development; greyed out if that type already exists for the project |
-| **Production environment** toggle | One per project; makes this env the Catalog source of truth and cross-project ref resolver |
-| dbt version / release track | Latest / Compatible / Extended |
-| Custom branch | Controls which branch is cloned at job runtime (deploy envs) or forked from (dev env) |
-| Extended attributes | YAML snippet overriding `profiles.yml`; top-level keys only |
-
-**Connection-specific editable fields:**
-
-| Platform | Editable in environment UI |
-|---|---|
-| Snowflake | Role, Database, Warehouse |
-| Databricks | Catalog (optional, for Unity Catalog) |
-| Postgres / Redshift | Nothing — inferred from project connection; use extended attributes to override |
-| BigQuery / Spark | Nothing — inferred from project connection; use extended attributes to override |
-
-**Deployment credentials (per platform):**
-
-| Platform | Credential fields |
-|---|---|
-| Snowflake | Auth method (Username+Password or Key Pair), Username, Password or Private Key + optional passphrase, Schema |
-| Postgres / Redshift | Username, Password, Schema |
-| BigQuery | Dataset |
-| Databricks / Spark | Token, Schema |
-
-**Gotcha**: Wrap credential values in environment variables — avoid hardcoding secrets in the credentials form, as values may appear in logs.
+**Q: Developers should run jobs in Staging but not write to Production. What do you set?**
+A: Environment-level permissions on their group: write access for Staging, not Production.
 
 ---
 
@@ -249,11 +342,9 @@ A: Compatible lags slightly behind Latest for stability — good for most teams.
 
 ### Reference Notes
 
-**The Core Question: What schema does a model land in?**
+**What schema does a model land in?** The `generate_schema_name` macro decides.
 
-dbt determines the final schema name using a Jinja macro called `generate_schema_name`. This macro lives in the dbt core library but can be overridden in your project's `macros/` directory.
-
-**Default `generate_schema_name` macro:**
+**Default macro:**
 ```jinja
 {% macro generate_schema_name(custom_schema_name, node) -%}
     {%- set default_schema = target.schema -%}
@@ -265,91 +356,64 @@ dbt determines the final schema name using a Jinja macro called `generate_schema
 {%- endmacro %}
 ```
 
-**Result table — default behavior:**
+| Target schema | `schema` config | Result |
+|---|---|---|
+| `analytics_prod` | none | `analytics_prod` |
+| `analytics_prod` | `marketing` | `analytics_prod_marketing` |
+| `alice_dev` | `marketing` | `alice_dev_marketing` |
+| `dbt_cloud_pr_123_456` | `marketing` | `dbt_cloud_pr_123_456_marketing` |
 
-| Setup | Resulting schema |
-|---|---|
-| Dev target schema = `dbt_user_1`, no `schema` config | `dbt_user_1` |
-| Dev target schema = `dbt_user_1`, model config `schema: core` | **`dbt_user_1_core`** |
-| Prod target schema = `analytics`, model config `schema: core` | `analytics_core` |
-| Prod target schema = `analytics`, no `schema` config | `analytics` |
+**The custom schema is appended to the target schema, it does not replace it.**
 
-**The custom schema does NOT replace the target schema — it appends to it.**
+**Why:** if you drop `default_schema` from the macro, developers who use the same custom schema overwrite each other's models.
 
----
+**The docs' production override** (env-aware):
+- `target.name == 'prod'` → use the custom schema (target schema if none)
+- Anything else (dev, CI) → **custom schema ignored**, target schema used
 
-**Why the default appends (not replaces):**
-If the default returned just the custom schema in dev, every developer with `schema: core` would write to the same shared `core` schema — developers would overwrite each other's data. Appending the personal target schema prefix (`dbt_user_1_`) ensures isolation in development.
+| Environment | Target schema | `schema` config | Result |
+|---|---|---|---|
+| prod | `analytics_prod` | `marketing` | `marketing` |
+| dev | `alice_dev` | `marketing` | `alice_dev` |
+| CI | `dbt_cloud_pr_123_456` | `marketing` | `dbt_cloud_pr_123_456` |
 
----
-
-**The Architect Override Pattern (prod uses clean schema name):**
-
-Most production teams want models with `schema: core` to land in `core`, not `analytics_core`. The standard override pattern:
-
+- dbt ships this as `generate_schema_name_for_env`. It's **off by default**. To turn it on:
 ```jinja
+-- macros/generate_schema_name.sql
 {% macro generate_schema_name(custom_schema_name, node) -%}
-    {%- set default_schema = target.schema -%}
-    {%- if custom_schema_name is none -%}
-        {{ default_schema }}
-    {%- else -%}
-        {%- if target.name == 'prod' -%}
-            {{ custom_schema_name | trim }}
-        {%- else -%}
-            {{ default_schema }}_{{ custom_schema_name | trim }}
-        {%- endif -%}
-    {%- endif -%}
+    {{ generate_schema_name_for_env(custom_schema_name, node) }}
 {%- endmacro %}
 ```
+- Put the override in `macros/generate_schema_name.sql`. dbt **ignores** `generate_schema_name` macros from installed packages.
+- Set **Target name = `prod`** on the production job. Docs suggest `dev`, `ci`, `prod`.
 
-- **Dev** (`target.name = dev`): `dbt_user_1_core` — isolated per developer
-- **Prod** (`target.name = prod`): `core` — clean schema name
+**Target name**
+- Job: Target Name field in job settings. IDE: Account settings → Credentials → target name.
+- It's a string your macro reads. It is **not** the environment type.
 
-Place this in `macros/generate_schema_name.sql` — dbt auto-detects it.
-
----
-
-**`target.name` — the environment signal:**
-- Set via the dbt Cloud job's **Advanced Settings → Target name** field
-- dbt Cloud IDE defaults to `target.name = dev` unless overridden
-- Deployment jobs can be given `target.name = prod` to trigger production schema logic
-- `target.name` is distinct from environment type — it's a string you control; your macro decides how to use it
-
----
-
-**Key rules:**
-- **Default formula**: `target.schema` + `_` + `custom_schema`
-- **Override location**: `macros/` directory — any file name; dbt detects by macro name
-- **Always preserve `target.schema` prefix in dev** — dropping it causes developer collisions
-- **CI temp schema is exempt**: CI jobs write to `dbt_cloud_pr_<job_id>_<pr_id>` — the CI schema is NOT passed through `generate_schema_name` for the temp schema itself
-
----
-
-**CI + Custom Schema Conflict:**
-- If a custom `generate_schema_name` macro returns a name that doesn't match the expected `dbt_cloud_pr_<job_id>_<pr_id>` pattern, dbt cannot identify the temp schema to delete it on PR close/merge — the PR schema orphans in the warehouse.
-- Fix: ensure custom macro logic does not interfere with CI temp schema naming, or use the `node.config.schema` guard in the macro.
-
----
+**CI schemas**
+- PR schema looks like `dbt_cloud_pr_<job_id>_<pr_id>` and is dropped when the PR merges or closes.
+- If you override `generate_schema_name`, the result must **keep the `dbt_cloud_pr_` prefix**. ✅ `dbt_cloud_pr_123_456_marketing` ❌ `marketing`. Otherwise the temp schemas are **not dropped**.
 
 ### Gotcha Q&A
 
-**Q: Dev schema is `dbt_user_1`. A model has `config: { schema: 'core' }`. You run it in the dbt Cloud IDE. What schema does the model land in?**
-A: `dbt_user_1_core`. The default `generate_schema_name` macro prepends the target schema. The custom schema does NOT replace the target schema — it appends to it with an underscore.
+**Q: Dev target schema is `dbt_user_1`, model has `schema: 'core'`, default macro. Where does it land?**
+A: `dbt_user_1_core`.
 
-**Q: In production, a team wants models with `schema: 'core'` to land in the `core` schema, not `analytics_core`. What do they need to do?**
-A: Override `generate_schema_name` in `macros/` with logic that checks `target.name == 'prod'` and returns only the custom schema name in that case. Leave the default prefix behavior for all other target names.
+**Q: A team wants `schema: 'core'` to land in `core` in production. What do they do?**
+A: Override `generate_schema_name` in `macros/`. When `target.name == 'prod'` return the custom schema. Set Target name = `prod` on the production job.
 
-**Q: A developer overrides `generate_schema_name` to always return just the custom schema name. What goes wrong in development?**
-A: All developers whose models have `schema: 'core'` now share the same `core` schema — they overwrite each other's model data. Always preserve `target.schema` as a prefix in non-production targets.
+**Q: Someone makes the macro always return just the custom schema. What breaks in dev?**
+A: Developers with the same `schema` config write to the same schema and overwrite each other.
 
-**Q: You set `schema: 'core'` on a CI job. After the PR merges, the PR schema isn't cleaned up. What's the likely cause?**
-A: A custom `generate_schema_name` macro is overriding the expected PR schema naming. dbt can only auto-delete the temp schema if its name matches `dbt_cloud_pr_<job_id>_<pr_id>`. A macro that outputs a different name breaks auto-cleanup.
+**Q: PR schemas aren't dropped after merge. Why?**
+A: A custom `generate_schema_name` doesn't keep the `dbt_cloud_pr_` prefix.
 
-**Q: A job's Advanced Settings has `target name` set to `prod`. The team's custom macro returns just the custom schema when `target.name == 'prod'`. A model with `schema: core` runs. Where does it land?**
-A: In the `core` schema — the "Target name" override feeds directly into `target.name` within the macro.
+**Q: The production job has Target name `prod` and the macro returns the custom schema for `prod`. Model has `schema: core`. Where does it land?**
+A: `core`.
 
-**Q: Two developers both have models with `config: { schema: 'finance' }`. Developer A's target schema is `dbt_alice`, Developer B's is `dbt_bob`. Do they collide?**
-A: No — default behavior produces `dbt_alice_finance` and `dbt_bob_finance` respectively. The personal target schema prefix ensures isolation.
+**Q: Alice (`dbt_alice`) and Bob (`dbt_bob`) both use `schema: 'finance'`. Do they collide?**
+A: No. `dbt_alice_finance` and `dbt_bob_finance`.
 
 ---
 
@@ -357,229 +421,89 @@ A: No — default behavior produces `dbt_alice_finance` and `dbt_bob_finance` re
 
 ### Reference Notes
 
-**Job Types**
-- **Deploy jobs**: scheduled or event-triggered; consume run slots; materialize prod data
-- **CI jobs**: PR-triggered; **do NOT consume run slots**; use temp schema `dbt_cloud_pr_<job_id>_<pr_id>`; schema auto-deleted on PR close/merge (unless a custom schema macro overrides default naming)
-- Same PR → CI runs **serially** with smart cancellation of stale builds
-- Different PRs → CI runs **concurrently**
+**Job types**
+- **Deploy job**: runs on a schedule, after another job, by API, or manually. Uses a **run slot**.
+- **CI job**: runs when a PR is opened or gets a new commit. **No run slot**, never blocks production runs.
+- **Merge job**: runs on merge. **Does use a run slot**. One run at a time, newest queued run wins.
+- CI default command: `dbt build --select state:modified+`.
 
-**Command Ordering Rules**
-- Commands run sequentially; failure at step N skips all subsequent steps
-- `dbt build` **must** run before `dbt sl validate` — models must exist in CI schema first
-- `dbt source freshness` as a **checkbox**: runs **first**; if it fails, the job can still succeed if all subsequent steps succeed
-- `dbt source freshness` as a **command step**: failure blocks all subsequent steps
-- `dbt docs generate` as a **checkbox**: runs **after** all listed commands; if it fails, the job can still succeed if all subsequent steps succeed
-- Key nuance: checkbox failures are **isolated** — they don't propagate to the overall job status as long as the steps after them pass
+**Commands**
+- Run in order. If a step fails, the next ones **don't run** and the job is **Error**.
+- At least **one dbt command** is required. `dbt deps` is built in.
+- `dbt lint` can't go in deploy jobs. CI has a linting toggle (SQLFluff on v1, `dbt lint` on v2). Linting: Starter, Enterprise, Enterprise+. Stop or continue on error.
+- A selector that matches nothing doesn't fail the job.
+- `dbt sl validate`: the docs list `dbt build --select state:modified+` first, then `dbt sl validate --select state:modified+`.
+- **`dbt build` order = DAG order.** No fixed order by resource type.
+  - Unit tests run **before** the model is built. Data tests run after.
+  - A failing test on an upstream node makes downstream nodes **SKIP**. Set severity `warn` to avoid it. A failing model also skips its downstream models, unless the model sets `on_error: continue`.
+  - `--full-refresh`: applies to every selected type that supports it. **Snapshots ignore it** (v2.0+).
+  - `--empty`: refs and sources return zero rows. Use `.render()` to force a relation.
 
-**Deferral Types**
+**Source freshness**
+- **Checkbox**: runs `dbt source freshness` **first**. If it fails, later steps still run and the job can still succeed.
+- **Command step**: if it fails, the steps after it **don't run**.
+- Want stale data to block the build? Run it first as a step. Otherwise last, or in a separate job.
+- `dbt build` does **not** run freshness.
+- A job with only the checkbox needs a placeholder command like `dbt compile`.
+- Check at least **2× as often** as your tightest SLA (1 hour SLA → every 30 min).
+- Snowflake freshness uses `LAST_ALTERED`.
 
-| Type | Use Case | Risk |
-|---|---|---|
-| Defer to Production | Standard CI: validate PR against prod state | Breaks if prod job hasn't run successfully recently |
-| Self-deferral | Cost optimization in chained jobs | Requires a prior successful run of the same job |
-| No deferral | When state is unreliable | Full DAG builds — expensive |
+**Generating docs / Catalog**
+- dbt v2 jobs: no docs command needed. Every run refreshes Catalog metadata.
+- Catalog updates after each job run in a **production or staging** deployment environment.
+- v1: **Generate docs on run** checkbox. Not applicable to dbt v2 jobs. When it runs relative to your commands isn't stated in the docs.
+- Legacy docs site: Project → Edit → **Artifacts** → pick the job. Use **one** production job per project.
 
-**Self-Deferral**
-- Job defers to its own previous successful run (not another environment)
-- Ideal when job_A triggers job_B and job_B only needs to rebuild what changed since last run
-- First-ever run has no prior manifest → falls back to full DAG build
-
-**Advanced CI — Full Detail (Enterprise only)**
-
-*Requirements:*
-- Plan: **Enterprise or Enterprise+** — not available on Starter/Developer
-- Must be explicitly enabled in account settings by a dbt admin
-- CI and production models must live on the **same database host/connection** — different hosts = compare fails completely
-- Model must have a **primary key constraint or uniqueness test** — without it you get "Primary key missing" error, no row-level diff
-- Supported platforms: BigQuery, Databricks, Postgres, Redshift, Snowflake only
-
-*How Compare Changes works end-to-end:*
-1. PR opens or receives a new commit → CI job triggers
-2. dbt builds modified models in the temp CI schema, defers unmodified upstream to production
-3. dbt compares the CI output against the production version of the same model, row by row
-4. Results appear in two places: the **Compare tab** in the dbt Cloud job run details, and an **automated comment posted to the PR** in the git provider
-5. PR comment summarises: added rows, removed rows, modified rows, column-level changes, primary key analysis
-
-*`event_time` — why it matters:*
-- Without `event_time`: full tables compared → CI runs typically cover a smaller date window than production → rows outside that window appear as "deleted" → **false positives on every run**
-- With `event_time`: dbt filters both CI and production tables to the **overlapping time range** before comparing → accurate diff, no spurious deletions
-
-*CI result cache:*
-- Up to **100 rows per modified model** cached for preview
-- Stored **encrypted** in region-specific S3 or Azure Blob Storage (in your account's region)
-- Retained for **30 days** — after that, comparison results are inaccessible and show an expiration message
-- Cache is reused when you revisit the Compare tab — avoids re-querying the warehouse on each view
-- **Dynamic data masking does NOT apply** to cached samples — all users with job access see the same unmasked cached rows regardless of warehouse masking policies
-
-*Other Advanced CI features:*
-- **SQL linting** (SQLFluff): available Starter+; sub-options: stop on error vs continue on error
-- **Smart cancellation**: same PR, new commit → stale queued CI runs are automatically cancelled; only the latest commit's run proceeds
-- **Concurrent CI**: different PRs run concurrently (each gets its own temp schema); same PR runs serially
-- **Custom commands**: can add commands to the CI job to exclude large models from comparison (e.g. `--exclude tag:large`) or limit scope to reduce cost
-
-**Job Chaining**
-- Available: Starter, Enterprise, Enterprise+ — **NOT Developer**
-- Can chain jobs across projects (cross-project Mesh chaining still gated by Enterprise+ for Mesh itself)
-- Configure which statuses trigger downstream (success only, or success+failure)
-
-**Setup steps (per dbt docs):**
-1. Navigate to **Deploy → Jobs** → select or create the **downstream** job → **Triggers** section.
-2. Enable **Run when another job finishes**.
-3. **Specify the parent project** — same project for intra-project chaining, or a different project for cross-project Mesh orchestration.
-4. **Specify the upstream deploy job** to listen to.
-5. Under **Completes on**, choose the run status(es) that should enqueue the downstream job (e.g., Success only, or Success + Warning).
-6. Save the job.
-
-**Verification & gotchas:**
-- When chained, the run details page shows a link back to the upstream job that triggered the run — useful for debugging missed triggers.
-- You must have proper permissions on **both** the upstream project/job and the downstream project/job to configure the trigger.
-- Chaining is the canonical Mesh upstream→downstream orchestration mechanism — there is no CLI selector that builds two projects in one invocation.
-- A chained job runs at most once per upstream completion event. Rapid back-to-back upstream runs do not coalesce — each completion enqueues a separate downstream run.
+**Deferral (job setting "Compare changes against")**
+- Deploy job default: **No deferral**. CI job default: **Production**.
+- **Environment** (recommended): state from the **latest successful run** in that environment, from **any** job that updates artifacts there.
+- **This Job** (self-deferral, older): that job's own last successful run.
+- CI state comparison needs a deferred environment selected.
+- ⚠ The docs don't say what happens on a first run with no prior manifest.
 
 **Scheduling**
-- All scheduling in **UTC only** — no timezone conversion
-- If job duration exceeds scheduling frequency: scheduler cancels queued runs, keeps only newest → queue bloat prevention
-- Developer plan: 10-minute minimum scheduling interval
+- **Intervals**: every N hours from midnight UTC, same gap each time. **Specific hours**: comma-separated UTC hours (whole hours only). **Cron**: exact times (`5 4 * * *` = 4:05 UTC; `L` and `MON#1` work).
+- Everything is **UTC**. No daylight saving adjustment.
+- Developer plan: minimum **10 minutes**. Starter and up: no limit.
+- The same job runs **serially**. If runs take longer than the schedule, the scheduler keeps only the **newest** queued run and cancels older ones. It won't cancel API-triggered runs.
+- All run slots busy → the run waits.
 
-**Run Slots**
-- CI jobs bypass the slot system entirely
-- Deploy jobs consume slots; over-provisioning without planning causes queue buildup
+**Limits**
+- Run slot counts aren't in the docs (see pricing page). Multi-tenant Enterprise: unlimited concurrency since July 2023. Starter and Developer: **one project each**.
+- Memory: **600 MiB** per run, all accounts, not configurable. Over it → "memory limit error".
+- Auto-deactivation: a deploy or CI job after **100 consecutive failures**. Reactivate by editing and saving the job, or **Run now**. Inactive account: warning at 90 days, jobs deactivated 7 days later.
+- Threads default **4**. Don't override the dbt version.
 
-**`dbt build` Execution Order**
-1. Seeds
-2. Models + Snapshots (concurrent)
-3. Tests (after upstream resources complete)
-4. UDFs (v1.11+ / Fusion engine only)
+**Job chaining ("Run when another job finishes")**
+- Plans: **Starter and Enterprise-tier** (not Developer).
+- Setup: job → Triggers → Run when another job finishes → pick the **project**, the upstream **job**, and **Completes on** (Success only, or all statuses).
+- One upstream job can trigger several downstream jobs, including in other projects. You need permission on both.
+- Cross-project chaining needs more than one project → **Enterprise-tier**.
 
-- Failing test on an upstream model → all downstream models enter **SKIP** status (not error — skip)
-- Workaround: set test severity to `warn` instead of `error` to prevent downstream blocking
-- Unit tests run **before** model materialization — cheaper to fail early
+**CI jobs**
+- **Triggered by pull requests**: on by default. **Run on draft pull request**: opt-in.
+- Same PR, new commit: the newest run starts and stale in-flight runs are **cancelled** (serial). Different PRs: **concurrent**. Concurrent CI and smart cancellation need **Starter+**, and aren't available for API-triggered CI on Starter.
+- Temp schema `dbt_cloud_pr_<job_id>_<pr_id>`, dropped when the PR closes or merges. Not dropped if a `generate_schema_name` override loses the `dbt_cloud_pr_` prefix, or for API-triggered CI.
+- **Run source freshness** option: runs freshness before the CI job.
+- **Run timeout**: 3600 s by default when dbt compare is on.
+- **Monorepo**: one PR triggers CI for **all** connected projects. Use a target branch per project (`main-project-a`).
+- **Fork PR**: dbt can only check out commits from the original repo.
+- Ingress PrivateLink or IP allowlisting: CI hooks **may be unavailable**, so CI can fail silently.
+- Azure DevOps: no new run if the PR's latest commit already triggered one.
 
-**`dbt build` Key Flags**
-- `--empty`: schema-only dry run; limits refs/sources to zero rows; macros using `.render()` required to avoid errors
-- `--full-refresh`: applies uniformly to all resource types in the run
-- `--select model_a`: runs AND tests `model_a` plus dependent tests (indirect selection)
-
-**Source Freshness — Extra Gotchas**
-- Run freshness checks at minimum **2x the frequency** of your lowest SLA (e.g., 1-hour SLA → check every 30 min)
-- If a job contains **only** a `dbt source freshness` checkbox with no other steps, add a placeholder command (e.g., `dbt compile`) — a job with nothing to execute will error
-- Snowflake freshness uses `LAST_ALTERED` column, which has known edge-case limitations
-
-**CI Edge Cases**
-
-| Scenario | Behavior | Fix |
-|---|---|---|
-| **Monorepo** (multiple dbt projects in one repo) | Single PR triggers CI jobs for ALL connected projects | Use project-specific target branches: `main-project-a`, `main-project-b` |
-| **Fork PR** | dbt cannot check out fork commits | Contributors must push to origin repo, not a fork |
-| **PrivateLink + CI** | CI hooks are NOT available with Virtual Private dbt | Check PrivateLink security settings; jobs fail silently |
-| **Azure DevOps** reused branch | CI won't trigger on new PR with same branch name used in abandoned PR, or same commit | Use new branch names and new commits |
-| **GitLab Free Plan** | CI triggers but status not posted back to MR | Upgrade to Pro, or switch to GitHub/Azure DevOps |
-| **Stale manifest** | Multiple jobs updating artifacts → unpredictable CI state | Run `dbt parse --no-partial-parse` after merges; designate single job for artifacts |
-
-**`dbt retry` Command**
-- Re-executes last invocation from the failure point, using `run_results.json`
-- Supported commands: `build`, `compile`, `clone`, `docs generate`, `seed`, `snapshot`, `test`, `run`, `run-operation`
-- **Critical limitation**: If the job fails before ANY nodes execute (warehouse connection error, permission error) → retry is a **no-op** — nothing in `run_results.json` to resume from
-- In that case: must trigger a full job rerun manually
-- **Rule**: `dbt retry` = recoverable SQL/model errors only. NOT for infrastructure failures.
-
-**Run Slots & Concurrency**
-- **Developer / Starter**: **1 run slot** — serial execution only; cannot run two jobs simultaneously
-- **Enterprise / Enterprise+**: Higher allocation (exact number varies by contract)
-- Memory limit: **600 MiB** per run pod — all plans, not configurable; exceeded by loading data into macros
-- Job auto-deactivation [Beta]: scheduled jobs stop auto-enqueueing after **100 consecutive failures**
-
-**Scheduling Drift**
-- "Every 2 hours" mode = elapsed time after first run, NOT fixed clock intervals
-- Job starts 3:05am → next runs at 5:05am, 7:05am (NOT 4:00am, 6:00am)
-- For precise clock-aligned scheduling: **use cron syntax** instead of interval mode
-
-**CI Job Notifications**
-- CI results appear as **native Git platform status checks** only (GitHub PR check, GitLab MR status, Azure DevOps PR status)
-- No email/Slack notification documented for CI jobs specifically
-- Advanced CI Compare Changes: posts a detailed **PR comment** with row/column diffs
-
-**Optional Settings — Gotcha Flags**
-- `dbt version override`: NOT recommended — breaks run reproducibility
-- Thread count default: 4; too high causes warehouse contention
-- Target name override: useful for environment-specific schema naming in custom macros
+**Advanced CI (dbt compare)**
+- **Enterprise / Enterprise+**, turned on by an admin. Platforms: BigQuery, Databricks, Postgres, Redshift, Snowflake.
+- CI and production must be on the **same database host / connection**.
+- Record-level compare needs a **primary key constraint or uniqueness test**, or you get "Primary key missing".
+- `event_time` on the model: compares only the overlapping time range, so no false "deleted" or "new" rows.
+- Results: **Compare tab** on the run + a **PR comment**.
+- Cache: up to **100 rows per modified model**, encrypted, S3 / Azure Blob in your region, **30 days**.
+- **Not dynamically masked.** Every account user can see the comparison results and cached rows. Restrict the CI environment's credentials, or use synthetic data.
+- Limit what's compared: `--select state:modified --exclude fct_orders`.
 
 ---
 
-### Deploy Job UI — All Configurable Fields
-
-**Job Settings section:**
-
-| Field | Required? | Notes |
-|---|---|---|
-| Job name | ✅ | e.g. "Daily build" |
-| Description | No | Documents what the job consumes/produces |
-| Environment | ✅ | Defaults to env where job was created; **cannot be changed after creation** |
-
-**Execution Settings section:**
-
-| Field | Required? | Notes |
-|---|---|---|
-| Commands | ✅ | Sequential; default `dbt build`; failure at step N skips all subsequent steps |
-| Generate docs on run | No (checkbox) | Runs **after** all commands; failure is **isolated** (won't fail the job) |
-| Run source freshness | No (checkbox) | Runs **before** all commands; failure is **isolated** (won't fail the job) |
-
-**Triggers section:**
-
-| Field | Notes |
-|---|---|
-| Run on schedule toggle | Enables scheduled execution |
-| Schedule type | Three options: **Intervals** (every N hours), **Specific hours** (comma-separated UTC hours), **Cron** (full cron expression) |
-| Days of week | Multi-select; available with Intervals or Specific hours modes |
-| Run when another job finishes toggle | Enables job chaining; Starter+ only (not Developer) |
-| Upstream project + job + status | Dropdowns to select which job and on what completion status (success / failure / both) triggers this job |
-
-**Advanced Settings section:**
-
-| Field | Default | Notes |
-|---|---|---|
-| Environment variables | Empty | Key-value overrides; job-level wins over env/project/account |
-| Target name | — | Override for custom macro schema logic |
-| Run timeout (minutes) | None | Cancels job if exceeded |
-| Compare changes against | No deferral | Options: **No deferral**, **Environment** (prod deferral), **This Job** (self-deferral) |
-| dbt version | Inherits from env | Override not recommended |
-| Threads | 4 | Increase cautiously — too high causes warehouse contention |
-
----
-
-### CI Job UI — All Configurable Fields
-
-**Job Settings section:** same as deploy job (name, description, environment).
-
-**Git Trigger section:**
-
-| Field | Default | Notes |
-|---|---|---|
-| Triggered by pull requests toggle | **ON** | Main trigger for CI jobs |
-| Run on draft pull requests toggle | OFF | Opt-in; triggers on draft PR creation and updates |
-
-**Execution Settings section:**
-
-| Field | Default | Notes |
-|---|---|---|
-| Commands | `dbt build --select state:modified+` | Runs modified models + downstream; editable |
-| Linting (SQLFluff) toggle | OFF | Starter+ only; sub-options: **Stop on error** vs **Continue on error** |
-| dbt compare toggle | OFF | **Enterprise+ only**; compares PR data vs production row-level; requires PK constraints or uniqueness tests |
-| Compare changes against (deferral) | Production environment | Dropdown; environment to defer unmodified nodes to |
-| Run timeout (seconds) | 3600 (1 hour) | Only active when dbt compare is enabled |
-
-**Advanced Settings section:** same fields as deploy job (env vars, target name, dbt version, threads).
-
-**Additional checkboxes on CI jobs:**
-
-| Field | Default | Notes |
-|---|---|---|
-| Generate docs on run | OFF | Not typical for CI; documents PR state |
-| Run source freshness | OFF | Runs freshness check as part of CI |
-
----
-
-### Advanced dbt Commands & Node Selection
+### dbt Commands & Node Selection (practice set: Topic 10)
 
 **Graph Operators — Traversal Syntax**
 
@@ -614,7 +538,7 @@ dbt run --select "marts,tag:daily" --exclude "marts.big_model+"
 |---|---|
 | `state:new` | Nodes with no matching `unique_id` in comparison manifest — brand new resources |
 | `state:modified` | All new nodes + any nodes that changed vs comparison manifest |
-| `state:old` | Nodes in the comparison manifest that are unchanged |
+| `state:old` | A node with the same `unique_id` exists in the comparison manifest |
 | `state:unmodified` | Existing nodes with no changes |
 | `state:modified.body` | Changes to model SQL or seed file content |
 | `state:modified.configs` | Config changes (excludes database/schema/alias) |
@@ -632,8 +556,10 @@ dbt run --select state:modified --state path/to/prod/artifacts
 ```bash
 dbt run --select state:modified+ --defer --state path/to/prod/artifacts
 ```
-- Resolution priority with `--defer`: dev relations first → staging → production
-- `--favor-state` flag flips this: uses state manifest metadata first regardless of dev relations
+- By default dbt resolves `ref` against your **dev target**. The state manifest is used only if the node isn't selected **and** doesn't exist in your database
+- `--favor-state` makes dbt prefer the state manifest (not for selected nodes)
+- `--defer-state` lets deferral use a **different manifest** than `--state` (which still drives `state:modified`)
+- **Ephemeral models are never deferred**
 
 **Using `--state` and `--defer` together (standard CI pattern):**
 ```bash
@@ -644,13 +570,15 @@ dbt build --select state:modified+ --defer --state /path/to/prod/manifest
 - Saves significant warehouse compute in CI
 
 **Critical state gotchas:**
-- **Variables don't trigger `state:modified`**: if only `var()` values change between runs, dbt cannot detect the diff — affected models won't appear as modified
-- **Manifest overwrite**: dbt writes a new `manifest.json` during parse before state comparison — if `--state` points to the same `--target-path`, state comparison gets the freshly-written manifest, not the prior one. Fix: use a separate directory for comparison artifacts
-- **Seeds >1 MiB**: only tracked on file path changes, not content changes
-- **Relationship tests with mixed parents**: when using `--defer`, a relationship test between a modified model (in CI schema) and an unmodified model (in prod) can cause false failures — it queries across two environments simultaneously
+- **Vars and env vars**: if a model uses `var()` or `env_var()`, dbt can't trace a value change into `state:modified`. It's only likely to be marked modified if the change alters the model's config
+- **Manifest overwrite**: dbt overwrites `manifest.json` while parsing, so don't set `--state` and `--target-path` to the same path with `--defer` or `state:modified` (non-idempotent). Fix: move the manifest to its own folder, use a different `--target-path`, or pass `--no-write-json`
+- **Seeds over 1 MiB**: dbt can't compare contents and warns. It only tracks the file path. Seeds under 1 MiB are tracked by file hash
+- **Relationship tests with mixed parents**: with `--defer`, a `relationships` test between a modified and an unmodified model queries across two environments. Workaround: `dbt test -s "state:modified" --exclude "test_name:relationships"`
+- **What `state:modified` ignores**: changes to `tags` and `meta`. A `description` change counts only with `persist_docs`
+- **Code, not data**: it detects code, config and metadata changes, not data changes. Don't use it in a scheduled job that must build every run
 
 **`dbt ls` Command**
-- Lists project resources without connecting to the warehouse or executing anything
+- Lists project resources. Docs (dbt v2.0+): it reads your connection profile but doesn't connect to the database or run any queries
 - Alias: `dbt list`
 - Supports full node selection syntax (`--select`, `--exclude`, all graph operators)
 
@@ -682,10 +610,11 @@ select * from events where event_type = '{{ var("event_type") }}'
 select * from events where event_type = '{{ var("event_type", "activation") }}'
 ```
 
-- Works in `.sql` and `.yml` files during Jinja compilation
-- Does **NOT** work in `profiles.yml` or `packages.yml`
-- Missing required variable (no default) → compilation failure with a clear error
-- **Critical**: `--vars` changes are **invisible to `state:modified`** — changing only a var value won't mark dependent models as modified
+- Precedence: `--vars` on the command line beats `dbt_project.yml` (or `vars.yml`, v1.12+). The `var()` default argument is last
+- Jinja isn't supported inside the `vars` config. Values are literal
+- Missing variable with no default → compilation error
+- `var()` / `env_var()` value changes aren't traced by `state:modified` (see state gotchas above)
+- A `--vars` change forces a full re-parse (partial parsing)
 
 **Indirect Selection (`--indirect-selection`)**
 Controls which tests run when models (not tests) are selected:
@@ -695,7 +624,7 @@ Controls which tests run when models (not tests) are selected:
 | `eager` (default) | Runs tests if ANY parent node is selected — may error if other parents unbuilt |
 | `buildable` | Runs tests whose dependencies are either selected or ancestors of selected nodes |
 | `cautious` | Runs tests ONLY if ALL parent nodes are selected |
-| `empty` | Runs no indirect tests at all |
+| `empty` | Runs no tests at all, even tests attached directly to the selected node |
 
 ```bash
 dbt test --select "stg_orders+" --indirect-selection cautious
@@ -703,8 +632,8 @@ dbt test --select "stg_orders+" --indirect-selection cautious
 
 **Other Useful Selection Methods**
 ```bash
---select result:error          # nodes that errored in last run (works with run_results.json)
---select result:fail           # tests that failed in last run
+--select result:error          # any resource that errored (needs a prior run, test, build or seed)
+--select result:fail           # test nodes only. Tests have no downstream, so re-run models with 1+result:fail+
 --select source:snowplow+      # source and all downstream models (NAME-based)
 --select source_status:fresher+  # sources with new data since last freshness run + downstream (STATE-based)
 --select tag:nightly           # tag-based selection
@@ -724,7 +653,7 @@ These are **two different selector methods**. They look similar but resolve comp
 | `source:<name>+` | Name-based | The source literally named `<name>` plus its descendants | No |
 | `source_status:fresher+` | State-aware | Sources whose freshness state diffed as `fresher` (newer `max_loaded_at`) vs the prior `sources.json`, plus their descendants | **Yes** |
 
-- `source_status:` only accepts the value `fresher` — it is the **only** valid value of this method.
+- `source_status:` documents only the value `fresher`.
 - Required workflow:
   1. Run `dbt source freshness` previously and persist the resulting `sources.json` to a known path.
   2. Re-run `dbt source freshness` now (so dbt has a current snapshot to compare).
@@ -733,181 +662,134 @@ These are **two different selector methods**. They look similar but resolve comp
 - If you misspell as `source:fresher+` (single word), dbt looks for a source literally **named** `fresher` — almost always matches nothing.
 - Common use: source-driven incremental jobs that only build downstream when raw data has actually landed; cheaper than `state:modified+` when source updates are sparser than code changes.
 
+**Other commands (from the docs)**
+- **`dbt retry`**: re-runs the last invocation from the point of failure, using `run_results.json`. If the run failed before any node ran (for example a warehouse connection error), there's nothing to retry from: re-run the job. If the previous run succeeded, retry ends as "no operation". Supported: build, check, compile, clone, docs generate, seed, snapshot, test, run, run-operation.
+- **`dbt compile`**: needs a warehouse connection (introspective queries). `dbt compile --inline "select * from {{ ref('raw_orders') }}"` compiles a snippet without a model file (dbt v1.5+). `dbt parse` validates the project **without** connecting to the warehouse, and its manifest has no compiled SQL.
+- **Partial parsing**: on by default. For a full re-parse run with `--no-partial-parse` or set `PARTIAL_PARSE: false` (profiles.yml, env var or flag). dbt re-parses fully when `--vars`, `profiles.yml`, `dbt_project.yml`, packages, the dbt version or certain widely-used macros change. The cache is `target/partial_parse.msgpack` (`dbt clean` removes it). dbt v2 job runs no longer support the partial-parse flags.
+- **Source freshness**: a source is checked if it has a `freshness` config with `warn_after` and/or `error_after` (each needs `count` + `period`). Neither set → no check. `freshness: null` turns it off for a table. `loaded_at_field` is **optional**: without it dbt uses warehouse metadata tables when possible. `loaded_at_query` (v1.10+) is an alternative, and setting both is a parse error. Stale = nonzero exit code. v1 writes `target/sources.json`. v2 uses `dbt freshness` and writes `freshness.json`, plus `sources.json` for compatibility.
+
 ### Gotcha Q&A
 
-**Q: A CI job runs `dbt sl validate --select state:modified+` before `dbt build`. Semantic validation fails. Why?**
-A: Models must be materialized in the CI schema before semantic layer validation. `dbt build` must always precede `dbt sl validate`.
+**Q: A CI job runs `dbt sl validate` before `dbt build` and fails. Why?**
+A: The docs list `dbt build` first, then `dbt sl validate`.
 
-**Q: You configure self-deferral on a new CI job. The first run builds the full DAG instead of only modified models. Why?**
-A: Self-deferral needs a previous successful run of the same job to produce a manifest. On the first run, no prior manifest exists.
+**Q: Two PRs open at once. What does dbt do?**
+A: Runs them **concurrently**, each in its own temp schema. No run slots used.
 
-**Q: Two PRs open simultaneously. What does dbt do?**
-A: Runs them **concurrently** — each gets its own temp schema, no slot consumption.
+**Q: A developer pushes 3 commits to one PR. What happens?**
+A: Runs for the same PR are serial. The newest commit runs and stale in-flight runs are cancelled.
 
-**Q: A developer pushes 3 commits to a PR in rapid succession. How many CI runs execute?**
-A: Ideally 1. dbt smart-cancels stale queued builds for the same PR, running only the latest.
+**Q: Source freshness is a checkbox and fails. Does `dbt build` still run?**
+A: Yes. The checkbox runs first and doesn't break later steps. As a command step, it would stop them.
 
-**Q: The PR temp schema isn't cleaned up after the PR merges. What's the likely cause?**
-A: A custom schema macro overrides default naming — dbt can't identify the PR schema to delete it.
+**Q: A job has only the source freshness checkbox. It errors. Why?**
+A: A job needs at least one command. Add a placeholder like `dbt compile`.
 
-**Q: Advanced CI reports "rows deleted" on every run even though production data hasn't changed. What's misconfigured?**
-A: `event_time` is not configured. Without it, full tables are compared — CI runs covering smaller date windows appear to have deleted rows.
+**Q: `dbt retry` does nothing after a warehouse connection error. Why?**
+A: No nodes ran, so `run_results.json` has nothing to retry from. Re-run the job.
 
-**Q: Advanced CI's Compare Changes feature is enabled but no row-level diff appears — just a "Primary key missing" error. Why?**
-A: The model has no primary key constraint or uniqueness test. Advanced CI requires one of these to perform record-level comparison. Add a `not_null` + `unique` test on the PK column, or a primary key constraint in the model contract.
+**Q: A job scheduled every 15 minutes takes 20. What happens?**
+A: The queue grows. The scheduler keeps only the newest queued run and cancels older ones.
 
-**Q: A developer views the Advanced CI Compare tab and sees unmasked PII in the cached rows, even though warehouse dynamic data masking is configured. Why?**
-A: Dynamic data masking does not apply to Advanced CI cached samples. The cache stores raw rows at query time, and all users with job access see the same unmasked data. Sensitive models should be excluded from Advanced CI comparisons using `--exclude tag:pii` or similar.
+**Q: You need a job at exactly 4:05 UTC daily. Which schedule type?**
+A: Cron (`5 4 * * *`). Specific hours only takes whole hours.
 
-**Q: Advanced CI is configured but Compare Changes fails because CI and production are on different database hosts. How do you fix this?**
-A: CI and production environments must point to the same database host/connection for Advanced CI to work. Reconfigure either the CI or production environment to use the same connection.
+**Q: A team on the Developer plan wants a 5-minute schedule.**
+A: Not possible. Developer plan minimum is 10 minutes.
 
-**Q: Advanced CI comparison results from 5 weeks ago are no longer viewable. Why?**
-A: The CI result cache expires after 30 days. Historical comparison data is permanently inaccessible after that window — it's not retrievable.
+**Q: Job B in project B should run after Job A in project A. Which plans?**
+A: Chaining is Starter and up, but Starter and Developer have one project each. Cross-project needs Enterprise-tier.
 
-**Q: A scheduled job runs every 15 minutes but each run takes 20 minutes. What happens?**
-A: The scheduler cancels queued runs and keeps only the most recent. Effective interval becomes ~20 minutes. Prevents queue buildup.
+**Q: Advanced CI shows lots of "deleted rows" though production didn't change. Why?**
+A: No `event_time`. Without it, whole tables are compared and CI's smaller window looks like deletions.
 
-**Q: You want to chain Job B (in Project B) to run after Job A (in Project A). What's the minimum plan required?**
-A: Starter plan or higher. Developer plan does not support job chaining.
+**Q: Advanced CI says "Primary key missing". Why?**
+A: Record-level compare needs a primary key constraint or a uniqueness test on the model.
 
-**Q: A `dbt build` run has a failing test on `stg_orders`. Which resources are affected?**
-A: All models downstream of `stg_orders` enter **SKIP** status — not error. They don't run at all. Fix: set the test severity to `warn` if downstream models should still build.
+**Q: Advanced CI can't compare. CI and prod are on different hosts.**
+A: They must be on the same database host / connection.
 
-**Q: Unit tests are expensive to run. When does `dbt build` execute them relative to model materialization?**
-A: Unit tests run **before** model materialization — if a unit test fails, the model never materializes. This is cheaper than failing after a full table build.
+**Q: Comparison results from 5 weeks ago are gone. Why?**
+A: The cache expires after 30 days.
 
-**Q: A job has only `dbt source freshness` as a checkbox and no other steps. It errors on creation. Why?**
-A: A job needs at least one executable command step. Add a placeholder like `dbt compile` alongside the checkbox.
+**Q: A viewer sees unmasked PII in the Compare tab. Why?**
+A: Cached rows aren't dynamically masked, and every account user can see them. Restrict the CI environment's credentials or use synthetic data.
 
-**Q: You use a macro with `this` in a `dbt build --empty` run and it fails. Why?**
-A: `--empty` limits refs/sources to zero rows but macros must use `.render()` to handle the empty context correctly. Without `.render()`, the macro errors.
+**Q: PR schemas aren't dropped after merge. Why?**
+A: A `generate_schema_name` override lost the `dbt_cloud_pr_` prefix, or the CI was triggered through the API.
 
-**Q: A CI job fails with "cannot check out commit." The contributor submitted a fork PR. What's the issue?**
-A: dbt cannot check out commits from fork repositories. The contributor must push to the origin repo directly. Fork-based PRs are not supported for CI.
+**Q: One PR triggers CI in projects that didn't change. Why?**
+A: Monorepo: a PR triggers CI for every connected project. Use a target branch per project.
 
-**Q: You enable PrivateLink for security. CI jobs stop running and there are no error messages. What happened?**
-A: CI hooks are not available with Virtual Private dbt (PrivateLink). The jobs fail silently. Check the PrivateLink security configuration or move CI to a non-PrivateLink connection.
+**Q: CI says "Failed to checkout to specified revision" on a fork PR.**
+A: dbt can only check out commits from the original repo. Push the branch there.
 
-**Q: A `dbt retry` command runs but nothing executes. The prior failure was a warehouse connection timeout before any models ran. Why?**
-A: `dbt retry` reads `run_results.json` to find the failure point. If no nodes executed before the failure, the file has no nodes to resume from — retry is a no-op. Trigger a full job rerun instead.
+**Q: A `dbt build` test on `stg_orders` fails. What about its downstream models?**
+A: They are **skipped**. Set the test severity to `warn` to avoid it.
 
-**Q: You have a Starter plan. Two jobs are scheduled to run at the same time. What happens?**
-A: Starter has 1 run slot. The second job queues and waits for the first to complete — they cannot run concurrently.
+**Q: When do unit tests run in `dbt build`?**
+A: Before the model is built.
 
-**Q: A job is scheduled "every 30 minutes" but runs are drifting to irregular times. Why?**
-A: Interval scheduling maintains elapsed time after the first run, not fixed clock alignment. For fixed clock times, switch to cron syntax (e.g. `*/30 * * * *`).
+**Q: `state:modified` selects nothing even though `--state` is set. Why?**
+A: `--state` and `--target-path` point to the same folder, so `manifest.json` is overwritten. Use separate folders, or `--no-write-json`.
 
 ---
 
-### Blue/Green Deployments ⭐ DEEP
+### Blue/Green Deployments and `dbt clone` (practice set: Topic 4c)
 
-**What it solves:**
-Standard deployments risk downtime and data inconsistency — if a job fails mid-run, live queries may hit partially-built tables. Blue/green eliminates this by building everything in a staging environment and atomically swapping to production only after tests pass.
+**What the official docs say**
+- Blue/green shows up in the docs as a **use case for `dbt clone`**: "blue/green continuous deployment (on data warehouses that support zero-copy cloning tables)". The docs don't give a full blue/green procedure.
+- The database-swap steps below are a **community pattern** (dbt Community Forum, Snowflake). They are not in the official docs.
 
-**Core mechanism:**
-1. **Blue** = current production; **Green** = staging (being built)
-2. Run all dbt models targeting the green environment — production untouched
-3. Run all tests against green — if any fail, abort; blue remains live
-4. Execute an atomic **swap operation** — blue and green swap metadata pointers in a single operation
-5. Green is now production (blue); old blue becomes the new staging for next deployment
-6. Old blue data is preserved as an instant rollback point
+**`dbt clone`**
+- Clones selected nodes from the specified state into the target schema(s). It relies on `--defer`.
+- Zero-copy platforms: **Snowflake, Databricks, BigQuery**, when the model exists as a table in the source environment. Otherwise dbt creates a simple **pointer view** (`select * from` the source object).
+- `dbt clone --state path/to/artifacts` clones everything. `--select` clones a subset. `--threads` runs clone statements in parallel.
+- Pre-existing relations are **skipped** by default. `--full-refresh` recreates them.
+- Deferral: the **dbt platform CLI** adds `--defer` automatically. In the **Studio IDE** you turn on the "Defer to production" toggle first.
+- Available in the Studio IDE and the dbt platform CLI. Needs dbt 1.6+.
+- **Clone vs deferral:** clone needs compute and creates extra objects in your warehouse. Deferral is often cheaper and simpler.
+- Documented uses:
+  - blue/green continuous deployment
+  - cloning current production into development schemas
+  - handling incremental models in CI jobs
+  - testing code changes on downstream dependencies in your BI tool
 
-**`dbt clone` command:**
-- Copies selected nodes from a source state to a target schema using zero-copy cloning where available
-- Automatically includes `--defer`, so unselected upstream nodes resolve against the source state
-- Falls back to pointer views (`SELECT * FROM source`) on platforms that don't support native cloning
-- Default behaviour: skips pre-existing relations — use `--full-refresh` to recreate them
-- **Use clone when**: downstream tools (BI, apps) need to query realistic production-scale data before cutover
-- **Use deferral when**: testing only dbt logic in CI and cost matters — cheaper than clone
-
+**Incremental models in CI (docs example)**
+A modified incremental model has no table in the PR schema, so it builds in full. Clone production's copy first so it runs incrementally:
 ```bash
-dbt clone --state path/to/prod/artifacts             # clone all production models
-dbt clone --select "tag:finance" --state path/       # clone a subset
-dbt clone --state path/ --full-refresh               # recreate pre-existing clones
-dbt run-operation swap_database                      # atomic swap (custom macro)
+dbt clone --select state:modified+,config.materialized:incremental,state:old
+dbt build --select state:modified+
 ```
+`state:old` skips brand-new incremental models that don't exist in production. Only works on warehouses with zero-copy cloning, otherwise you get pointer views.
 
-**Platform support:**
-
-| Platform | Zero-copy clone | Atomic swap | Blue/Green viable? |
-|---|---|---|---|
-| Snowflake | ✅ (`CLONE`) | ✅ (`SWAP WITH`) | ✅ Fully supported |
-| Databricks | ✅ (shallow clone) | ✅ | ✅ Fully supported |
-| BigQuery | ✅ (table clone) | ⚠️ Dataset swap workaround | ✅ With workarounds |
-| Redshift | ❌ | ❌ No rename support | ⚠️ Not viable without downtime |
-| Postgres | ❌ | ❌ | ⚠️ Sequential DDL only |
-
-**Blue/green vs standard deployment:**
-
-| | Blue/Green | Standard |
-|---|---|---|
-| Downtime risk | Zero (atomic swap) | High (mid-run failure hits live queries) |
-| Rollback | Instant (swap back) | Manual recovery |
-| Storage | 2× (blue + green) | 1× |
-| Complexity | High (macros, ref overrides) | Low |
-| Incremental model risk | Yes — stale baseline after swap | No |
-| Snapshot compatibility | Breaks continuity | Native |
-
-**Critical failure modes and gotchas:**
-
-**Views with hardcoded database names break after swap:**
-```jinja
-{# REQUIRED: override ref() to exclude database from compiled SQL #}
-{% macro ref(model_name) %}
-  {% do return(builtins.ref(model_name).include(database=false)) %}
-{% endmacro %}
-
-{# Same override needed for source() #}
-{% macro source(source_name, table_name) %}
-  {% do return(builtins.source(source_name, table_name).include(database=false)) %}
-{% endmacro %}
-```
-Without this, views reference the hardcoded old database name and point to stale data after the swap.
-
-**Snapshots break after a database swap:**
-- `dbt_valid_to` tracking is disrupted when the snapshot table's database is swapped
-- **Fix**: store snapshots in a dedicated, non-swapped database; use a custom `ref_snapshot()` macro that always routes to that database
-
-**Incremental models risk stale baseline:**
-- After swap, the demoted blue becomes the new staging — its incremental table is the last pre-swap state
-- Next deployment builds incrementally on top of potentially stale data
-- **Fix**: run `dbt run --full-refresh --select <incremental_models>` after each swap, or track high-water marks in a separate non-swapped table
-
-**Only swap on full runs:**
-- Never trigger `swap_database` on a partial run (e.g. `--select state:modified`) — green will be incomplete
-- Partial CI jobs should deploy directly without swapping
-
-**Failure is safe:**
-- If `dbt run` or `dbt test` fails → swap never executes → blue production unchanged
-- If the swap itself fails → most platforms leave both databases untouched; retry the swap
-
-**Recommended job sequence:**
-```bash
-dbt run                    # build all models in green
-dbt test                   # validate; abort on any failure
-dbt run-operation swap_database   # atomic swap; only if tests pass
-```
+**Community blue/green pattern (Snowflake)**
+- Two databases (for example `stage` and `prod`). Build and test in `stage`, then swap them so the tested data becomes `prod`.
+- The swap is a macro you write, run with `dbt run-operation`. It's not a built-in command. On Snowflake: `alter database prod swap with stage`.
+- Job steps: `dbt run` → `dbt test` → `dbt run-operation swap_database`. A failed step stops the job, so the swap never runs.
+- The swap moves the **whole database**, so only swap after a full build.
+- **Views with fully qualified names** break or go stale after a swap. The thread's fix is to override `ref` (and `source`) so compiled SQL drops the database name.
+- BigQuery datasets can't be renamed, and the thread advises against schema swapping because it can break views and custom schemas.
 
 ### Gotcha Q&A
 
-**Q: After a blue/green swap, views in downstream BI tools are returning stale data. Why?**
-A: Views were compiled with hardcoded database names. After the swap, the database name they reference now points to the old (demoted) blue database. Fix: override `ref()` and `source()` macros to exclude the database qualifier from compiled SQL so views resolve against whichever database is currently aliased as production.
+**Q: Is `swap_database` a built-in dbt command?**
+A: No. It's a macro you write and run with `dbt run-operation`.
 
-**Q: Snapshot history has gaps after a blue/green deployment. What went wrong?**
-A: Snapshot tables were included in the database swap. The `dbt_valid_to` continuity tracking breaks when the snapshot table's physical database changes. Snapshots must live in a dedicated, non-swapped database.
+**Q: What does `dbt clone` do on Postgres or Redshift?**
+A: Creates pointer views, because those platforms aren't in the zero-copy list (Snowflake, Databricks, BigQuery). The docs only say "otherwise a pointer view."
 
-**Q: An incremental model has missing rows after several blue/green deployments. Why?**
-A: After each swap, the demoted blue becomes the new staging baseline. The incremental model's next run adds only rows newer than the stale demoted state — rows processed in the previous deployment may not be in the new staging baseline. Use `--full-refresh` on incremental models post-swap or maintain a separate high-water mark table.
+**Q: A `dbt clone` skips models already in the target schema.**
+A: Default behavior. Use `--full-refresh` to recreate them.
 
-**Q: You want to validate a blue/green deployment against your BI tool before cutover. Should you use `dbt clone` or deferral?**
-A: `dbt clone`. Deferral is invisible to external tools — BI tools query the actual warehouse tables. `dbt clone` creates real relations in the staging schema that BI tools can connect to. Use deferral for pure dbt logic testing in CI where cost matters.
+**Q: You run `dbt clone` in the Studio IDE and nothing is deferred.**
+A: Turn on the "Defer to production" toggle. The platform CLI includes `--defer` automatically.
 
-**Q: Your team uses Redshift. A colleague proposes implementing blue/green deployments. What's the problem?**
-A: Redshift does not support database/schema renaming or atomic swaps. Blue/green is not viable on Redshift without brief downtime from sequential DDL operations. Snowflake, Databricks, and BigQuery are the viable platforms.
+**Q: BI team wants to test against production-like data before release. Clone or deferral?**
+A: Clone: it creates real objects in the warehouse. Deferral is cheaper but only affects dbt's `ref` resolution.
 
-**Q: A `dbt clone` run skips models that already exist in the target schema. Why?**
-A: By default, `dbt clone` skips pre-existing relations. Use `--full-refresh` to force recreation of existing clones.
+**Q: Blue/green swap is run after a test failure. Does it happen?**
+A: No. Job steps run in order and a failed step stops the job.
 
 ---
 
@@ -915,338 +797,156 @@ A: By default, `dbt clone` skips pre-existing relations. Use `--full-refresh` to
 
 ### Reference Notes
 
-**License Types — Always Override Group Permissions**
+**Licenses (a license always overrides group permissions)**
 
-| License | Plans | Inherits Permission Sets? | Notes |
+| License | Plans | Inherits permission sets? | Notes |
 |---|---|---|---|
-| Developer | All | Yes — any permission set | Full feature access |
-| Analyst | Enterprise, Enterprise+ only | Yes — any permission set | Legacy; not available for new purchase |
-| IT | Starter, Enterprise, Enterprise+ | **No** — fixed access regardless of group | Security Admin + Billing Admin + edit Connections; can manage users, groups, connections, licenses |
-| Read-Only | Starter, Enterprise, Enterprise+ | **No** — fixed access regardless of group | View artifacts and deploy section (jobs, runs, schedules) only |
+| Developer | All | Yes | Full feature access (IDE, CLI, jobs). Can use service tokens |
+| Analyst | Enterprise, Enterprise+ | Yes | Legacy, not for new purchase |
+| IT | Starter, Enterprise, Enterprise+ | **No** | Fixed: Security Admin + Billing Admin + edit Connections. Manages users, groups, connections, licenses. No IDE, no jobs. Max **1 IT seat** per Starter or Enterprise-tier account, doesn't count toward seats. Can't be the default license |
+| Read-Only | Starter, Enterprise, Enterprise+ | **No** | View-only on all dbt resources (artifacts, Catalog, deploy section) |
 
-**Critical Rule**: License type **always overrides** group permission sets. Admin group + Read-Only license = read-only.
+- **Rule:** Account Admin group + Read-Only license = read-only. Account Admin group + IT license = still just IT access.
+- Enterprise: Read-Only users can be given the **Analyst read** permission set, and scoped to projects with granular permissions (a one-time, permanent switch).
+- Service tokens: Developer / Analyst licenses only (not Read-Only, not IT). Personal access tokens: Developer, Read-Only, IT.
+- Developer plan can't add users. Upgrade to Starter.
 
-**IT and Read-Only — The Group Assignment Trap**
-- IT and Read-Only users do **not** inherit rights from any permission sets — group assignment is irrelevant for them
-- Every IT user has **identical** access across the account regardless of which group(s) they belong to
-- Every Read-Only user has **identical** access across the account regardless of which group(s) they belong to
-- Assigning an IT or Read-Only user to a high-permission group has **zero effect** on their access
+**Adding and removing users**
+- Enterprise-tier: Account Settings → **Users** → **Invite Users**.
+- Starter: raise the **developer billing seat count** (Account settings → Billing), then invite. There are two counts: user seats and billing seats.
+- Remove: Account settings → Users → the user → **Edit → Delete → Confirm**. It's immediate. You can re-invite. A deleted Developer user frees a seat. Starter: lower the seat count on Billing.
 
----
+**Groups and RBAC**
+- Permissions are assigned **only to groups**, never to users. A group = permission sets + project scope + environment write access.
+- User in several groups → the **most permissive** wins.
+- Custom groups, SSO mappings and RBAC need **Enterprise / Enterprise+**. Starter and Developer: passwords with MFA only.
 
-### Permission Sets Reference (Enterprise)
-
-**Mental Model — Account-Level Roles (7)**
-
-| Role | One-liner | Key "cannot do" |
+| Default group | Permissions | Notes |
 |---|---|---|
-| Account Admin | Everything, no restrictions | N/A — full access |
-| Project Creator | Create & configure projects | Cannot manage billing, SSO, or IP restrictions |
-| Security Admin | Users, groups, licenses, SSO, IP restrictions | No IDE, no jobs, no runs, no environments |
-| Billing Admin | Billing section only + read public models | Almost everything else |
-| Cost Insights Admin | Configure cost metadata credentials + view cost data | No IDE, no job execution |
-| Cost Insights Viewer | Read-only cost and savings data | Cannot configure anything |
-| Viewer | Read-only everything + full audit log (incl. sensitive) | No IDE access |
+| Owner | Account Admin. **Permissions can't be changed** | For people responsible for the whole account |
+| Member | Broad. Restricts only billing and security features | New users are added automatically |
+| Everyone | Yours to customize | New users are added automatically |
 
-**Mental Model — Project-Level Roles (14)**
+- New users go into **both Member and Everyone**. You can delete the default groups once you've created your own.
+- You can't edit your own user.
+- Environment-level permissions: see Topic 3.
 
-| Role | One-liner | Key "cannot do" |
-|---|---|---|
-| Admin | Full project control (not account-wide) | Cannot **create new projects** |
-| Developer | Write code in IDE + personal credentials | Cannot create/edit jobs or environments |
-| Analyst | IDE access + view jobs/runs/environments | Cannot create jobs, edit environments |
-| Job Admin | Create/edit jobs, runs, env vars + data warehouse config | No IDE access |
-| Job Runner | Execute jobs only | No IDE, no job creation, no other access |
-| Job Viewer | Read-only job results, status, logs | Cannot execute or modify anything |
-| Database Admin | Data platform configs + env vars + Semantic Layer config | No IDE access |
-| Git Admin | Git integrations + env vars + project settings | No IDE access |
-| Team Admin | Manage project(s) for a team + limited account read | More limited than Admin |
-| Stakeholder | Read-only projects, envs, jobs, runs + limited audit log | No IDE; audit log excludes sensitive info |
-| Read-Only | Identical to Stakeholder | Same as Stakeholder |
-| Metadata | Discovery API read-only access only | No execution, no modification |
-| Semantic Layer | Query Semantic Layer only | Service token exclusive — cannot assign to users |
-| Fusion Admin | Fusion upgrade workflow only | Cannot assign to service tokens |
+**Permission sets**
+- Account-level: Account Admin, Account Viewer, Billing Admin, Cost Insights Admin, Cost Insights Viewer, Manage marketplace apps (marketplace integrations only), Notification Manager (Slack / Teams / email notifications), Project Creator, Security Admin.
+- Project-level: Admin, Analyst, Analyst read, Database Admin, Developer, Git Admin, Job Admin, Job Creator, Job Runner, Job Viewer, Metadata (Discovery API only), Semantic Layer, Stakeholder (= Read-Only), Team Admin, v2 Migration Admin.
 
----
-
-**Who Can Do X — Quick Lookup**
-
-| Task | Roles that can do it |
+| Task | Who |
 |---|---|
-| **Create new projects** | Account Admin, Project Creator only |
-| **Access the IDE** | Account Admin, Admin, Developer, Analyst |
-| **Create/edit jobs** | Account Admin, Admin, Job Admin |
-| **Execute (trigger) jobs** | Account Admin, Admin, Job Admin, Job Runner |
-| **Configure SSO / auth providers** | Account Admin, Security Admin |
-| **Manage users, groups, licenses** | Account Admin, Security Admin |
-| **Manage connections** | Account Admin (write); Security Admin (write); Database Admin (project write) |
-| **Configure Semantic Layer** | Account Admin, Admin, Database Admin, Job Admin (read), Semantic Layer token (query only) |
-| **View full audit log (incl. sensitive)** | Account Admin, Viewer (account-level) |
-| **View audit log (excl. sensitive)** | Stakeholder / Read-Only |
-| **Create webhooks** | Account Admin, Developer (project-level write) |
-| **Manage service tokens** | Account Admin (write); Security Admin (read only) |
-| **Query Semantic Layer via API** | Semantic Layer (service token only) |
-| **Access Discovery API (metadata)** | Metadata, most project roles (read) |
+| Create projects | Account Admin, **Project Creator**. Project Admin can't |
+| Use the IDE | Account Admin, Project Creator, Admin, Analyst, Developer |
+| Create / edit jobs and environments | Account Admin, Project Creator, Admin, Job Admin (Job Creator: jobs in assigned projects and environment types) |
+| Run jobs | The above + Job Runner |
+| Edit connections (account) | Account Admin, Project Creator (IT license can too) |
+| Users, groups, licenses, SSO, IP restrictions | Security Admin (+ Account Admin) |
+| Full audit log (incl. sensitive) | Account Admin, **Account Viewer** |
+| Audit log without sensitive info | Stakeholder / Read-Only |
+| Query the Semantic Layer | **Semantic Layer** set, with a service token |
 
----
+Traps:
+- **Admin ≠ Account Admin.** Admin can't create projects.
+- **Security Admin**: no IDE, no jobs, no runs, no environments.
+- **Database Admin**: no IDE. Write access to data platform configs, read-only environments.
+- **Analyst** = run and analyze models in the IDE, can't create or edit anything outside it. **Developer** = build models and manage production behavior (not the same as the Developer license).
+- **Billing Admin**: Billing section only. **Job Viewer**: job results and logs (+ Catalog).
+- **Semantic Layer**: service tokens only. **v2 Migration Admin**: users only.
 
-**Permission Set Gotchas**
-- **Admin ≠ Account Admin**: Project-level Admin has full project control but **cannot create projects** — only Account Admin and Project Creator can
-- **Security Admin has zero data access**: No IDE, no jobs, no runs — purely administrative
-- **Database Admin has no IDE**: Common trap — Database Admin manages platform configs but cannot write dbt code
-- **Git Admin has no IDE**: Manages repositories and git integrations only
-- **Job Runner is minimal**: Can only execute existing jobs and read their status — no creation, no other access
-- **Stakeholder vs Viewer**: Stakeholder (project-level) = limited audit log, no sensitive info; Viewer (account-level) = full audit log including sensitive
-- **Stakeholder = Read-Only**: These are two names for the identical permission set
-- **Semantic Layer**: Service token only — cannot be granted to human users
-- **Fusion Admin**: User-only — cannot be assigned to service tokens
-- **Project Creator + account settings**: Can create projects and manage limited account settings but cannot touch SSO, billing, or IP restrictions
+**Service tokens**
+- Belong to the **account**, not a user. For system-level integrations.
+- Create: Account settings → Service Tokens → Create. You need a **Developer license and account admin permissions**.
+- Shown **once**. Rotate: create new → update integrations → delete old.
+- One token can hold many permission sets, each for all projects or specific projects.
+- **Permission sets by plan:** Enterprise = any. Legacy Team = Account Admin, Member, Job Admin, Read-Only, Metadata, Semantic Layer. Developer / Starter = **Semantic Layer only**.
+- An Account Admin token has full read + write. Use with caution.
+- Service tokens obey **IP restrictions**: a 403 "Access denied" = the caller's IP isn't allowlisted. Add the integration's CIDRs.
+- Tokens created before July 18, 2023 still work. Rotate them if used at high frequency.
 
-**Permission Set Hierarchy**
-- Account-level: Account Admin > Security Admin > Project Creator > Billing Admin > Cost Insights Admin > Viewer
-- Project-level: Admin > Job Admin > Developer ≈ Analyst > Database Admin > Git Admin > Job Runner > Job Viewer > Metadata
-- When a user is in multiple groups: **most permissive wins** (not most restrictive)
+**Personal access tokens (PATs)**
+- Inherit the creator's permissions. Account-specific: one PAT per account, even with the same email.
+- Create: Account settings → API Tokens → Personal Tokens. Shown once. Rotate: create new, delete old.
+- Use a PAT only where needed. For flows that need a service account, use a **service token**. A PAT can't create a service token (400).
+- Old user API keys are deprecated and no longer work. Move to PATs.
 
-**Service Tokens**
-- Account-level, not tied to individuals
-- **Token value shown ONCE** — save immediately; unrecoverable after dialog close
-- Rotation pattern: create new → update integrations → delete old (no in-place rotation)
-- Subject to IP restriction allowlists; a `403` on API calls = IP not allowlisted (not a bad token)
-- Pre-July 18, 2023 tokens: recommend rotation to new format for performance and latency improvements
-- Created at: **Account Settings → Service Tokens → + New Token**. Creation requires Account Admin permission (regardless of the creator's license).
-- A single service token can carry **multiple permission sets**, and each permission set can be scoped to **all projects** or to **specific projects**.
+**SSO (Enterprise / Enterprise+)**
+- Setup: Account settings → **SSO & SCIM**. IdPs: Okta, Entra ID, Google Workspace, generic SAML 2.0. Flows: IdP-initiated, SP-initiated, **JIT** provisioning.
+- Login slug: generated by dbt, read-only (recreating the config makes a new one). Users sign in at `login.dbt.com` or `https://YOUR_ACCESS_URL/enterprise-login/<slug>`.
+- Once SSO is on, non-admin users must use SSO. **Admins keep password login** unless you turn off "Allow password logins for account administrators". Re-authentication every **24 hours**.
 
-**Personal Access Tokens (PATs) vs Service Tokens**
+**Okta SAML setup**
+- Okta: new app, Web, SAML 2.0. SSO URL `https://YOUR_AUTH0_URI/login/callback?connection=<slug>`. Audience URI `urn:auth0:<YOUR_AUTH0_ENTITYID>:<slug>`. Relay state `<slug>`. Name ID format Unspecified.
+- Attributes: `email`, `first_name`, `last_name`. Group attribute `groups`, filter regex `.*` (or `Starts with DBT_CLOUD_`). **Okta returns only 100 groups per user.**
+- Username: SSO only → `user.getInternalProperty("id")`. SSO + SCIM → **Email**.
+- dbt: Account settings → SSO & SCIM → Get started / Edit → Log in with Okta → paste SSO URL, Issuer, **X.509 certificate** → Save.
+- The certificate expiry is manual: an Okta admin must renew it and paste it into dbt, or access breaks.
 
-PATs and service tokens are both authentication tokens for the dbt Cloud APIs, but they are architecturally different.
+**License mappings (SSO)**
+- Account settings → **Groups & Licenses** → **License mappings**. Enter comma-separated **IdP group names** for **Read-Only** and **Developer**.
+- Based on **IdP groups**, not dbt groups. Applied at sign-in, so changes take effect the next time the user signs in.
+- In both mapped groups → **Developer** wins. In neither → the account's **default license**.
+- Default license: Groups & Licenses → Default license type → Developer, Read-Only or Analyst. **IT can't be the default.**
+- SSO group mapping: a dbt group is assigned if the user is in one of its mapped IdP groups, or if the group has **Assign by Default**.
 
-| Dimension | Personal Access Token (PAT) | Service Token |
-|---|---|---|
-| Identity | Tied to a specific user | Account-level — no user identity |
-| Permissions source | **Inherited** from the creating user's license + group memberships — not configurable on the token | **Explicitly assigned** permission sets at creation time |
-| Multiple permission sets per token? | No — whatever the user has | **Yes** — one token can carry many permission sets |
-| Project scoping | Whatever projects the user can access | Per permission set: **"all projects"** or **"specific projects"** |
-| Tier requirement | User must hold a Developer / Read-only / IT license | Available on all tiers, but the *available permission sets* differ by tier (see below) |
-| Created at | Account Settings → API Tokens → **Personal tokens** (the user creates their own) | Account Settings → **Service Tokens** (Account Admin only) |
-| License consumption | Consumes the user's seat | No seat consumed |
-| Audit trail | Actions logged as the user | Actions logged as the token (no human attribution) |
-| Lifecycle if user is deactivated | **PAT dies with the user** — deactivating/removing the user revokes all their PATs | Persists independently of any user |
-| Multi-account user with same email | **Separate PAT per dbt account** | N/A (token belongs to one account) |
-| IP allowlist | Subject to IP restrictions; 403 = IP not allowlisted | Same |
-| Visibility on creation | Shown **once**, unrecoverable after dialog close | Same |
-| Rotation | Create new → swap → delete old | Create new → swap → delete old |
-| Recommended use | dbt CLI, dev/staging scripts, endpoints requiring user context (e.g., creating/updating user credentials) | CI/CD, production Terraform, partner integrations (Semantic Layer, Hightouch, Datafold), all service-to-service automation |
+**SCIM (Enterprise / Enterprise+)**
+- Okta and Entra ID. Automates provisioning and de-provisioning, profile updates, groups and licenses.
+- With SCIM on: SSO group mappings are off, users **aren't auto-added to default groups**, and manual updates (including inviting users) are off by default.
+- Create an **Account Admin** group in the IdP with the **same name** as the dbt group.
+- SCIM token: Account settings → SSO & SCIM → Enable SCIM → Create SCIM token. Shown **once**. Replace it in your IdP before deleting the old one.
+- IP restrictions on? Allowlist Okta's IPs. Entra ID: keep "Ignore dbt license mapping" **off**.
 
-**Service-token permission sets by plan tier (per dbt docs):**
-
-| Plan | Permission sets available to service tokens |
-|---|---|
-| Enterprise / Enterprise+ | Any permission set: Account Admin, Account Viewer, Admin, Analyst, Billing Admin, Database Admin, Developer, Git Admin, Job Admin, Job Runner, Job Viewer, Manage Marketplace Apps, Metadata Only, Read-only, Semantic Layer Only, Security Admin, Stakeholder, Team Admin |
-| Legacy Team | Account Admin, Member, Job Admin, Read-Only, Metadata, Semantic Layer |
-| Developer / Starter | **Semantic Layer permissions only** |
-
-PATs have no equivalent table — they are simply whatever the user has. You **cannot** narrow a PAT below the user's own permissions; to restrict a PAT, you must restrict the user.
-
-**Architect-level uniqueness — PATs:**
-- Permission inheritance is implicit — there is no permission picker on the token itself.
-- A user with access to two dbt accounts (same email) needs **two separate PATs**, one per account.
-- PAT dies with the user — this is the canonical "production job fails after employee X leaves" trap.
-- PATs are required for the small set of API endpoints that need user context (e.g., creating or updating a specific user's credentials) — service tokens cannot perform those because they have no user identity.
-- Deprecated **user API keys** (the predecessor of PATs) no longer work — migration is mandatory.
-
-**Architect-level uniqueness — service tokens:**
-- One token, many permission sets, each with its own project scope. This is how you build a least-privilege automation token (e.g., `Job Runner` on Project A + `Read-Only` on Project B).
-- An **Account Admin** service token has full read+write across the entire account — dbt's docs flag this with a caution warning. Use sparingly and rotate aggressively.
-- The **Semantic Layer Only** permission set is service-token-exclusive — it cannot be assigned to a user. Conversely, **Fusion Admin** is user-only and cannot be assigned to a service token.
-- Service tokens persist independently of users — deactivating any individual leaves the token untouched.
-
-**When PAT vs service token (per dbt docs):**
-- Use a **service token** for: production CI/CD, dbt Cloud API automation, Semantic Layer integrations, Hightouch / Datafold / Census / Terraform / partner apps, anything that should outlive any individual.
-- Use a **PAT** for: local dbt CLI operations, dev/staging scripts, ad-hoc API calls, and endpoints that require user context.
-
-### Token Gotcha Q&A
-
-**Q: A production CI job that worked for months suddenly returns 401. The employee who set it up just left the company. What happened, and what's the fix?**
-A: The job was authenticated with the employee's **PAT**, which was revoked when the user was deactivated. **Fix**: replace it with a **service token** scoped to the minimum permission set needed (typically Job Admin + Read-Only on the relevant projects). PATs should never authenticate production automation.
-
-**Q: Where do you configure permissions for a personal access token?**
-A: **You don't.** PATs inherit the user's license + group memberships. To narrow a PAT's effective permissions, you must change the user's groups or license — which also affects the human. This is the architectural reason to prefer service tokens for any non-trivial scope: service tokens have explicit, narrowable permission sets independent of any user.
-
-**Q: A user has access to two dbt Cloud accounts using the same email address. Is one PAT sufficient for both?**
-A: No. PATs are **account-specific** — a separate PAT must be created per account, even when the user's email is the same.
-
-**Q: Which token type can be assigned multiple permission sets, each scoped to a different project?**
-A: **Service tokens only.** A single service token can carry, e.g., `Job Admin` on Project A + `Read-Only` on Project B. PATs have no per-project scoping mechanism — they always operate at the user's full permission level.
-
-**Q: A Developer-licensed user attempts to create a service token from Account Settings → Service Tokens but doesn't see the option. Why?**
-A: Service token creation requires **Account Admin** permission. The user's license type doesn't matter — the action is gated by permission set, not license. Either grant the user Account Admin (likely overkill) or have an Account Admin create the token on their behalf.
-
-**Q: A team built a service token in 2022 that's still working but their docs recommend rotating it. Why?**
-A: Service tokens issued **before July 18, 2023** use an older format. dbt recommends rotating high-frequency tokens to the new format for performance and latency improvements. They still work, but the new-format tokens are more efficient.
-
-**Q: An admin needs an integration that creates and updates a user's profile credentials. They configure it with an Account Admin service token but the API rejects the request. Why?**
-A: Endpoints that operate **on a specific user's account** require user-context authentication — i.e., a **PAT** for that user. Service tokens have no user identity and cannot satisfy these endpoints. This is one of the few cases where PATs are required.
-
-**SSO (Enterprise only)**
-- Mandatory for all non-admin users when enabled
-- **JIT provisioning**: account auto-created on first SSO login
-- Re-authentication every **24 hours**
-- **SCIM** (Okta and Microsoft Entra ID only): automates user + group provisioning/deprovisioning from IdP
-- Admins retain password access by default even with SSO enforced (can be explicitly restricted)
-
-**SSO setup with Okta — full step-by-step (per dbt docs)**
-
-Tier requirement: Enterprise / Enterprise+. Requires Okta admin and dbt Account Admin (or Security Admin) access.
-
-*Okta side:*
-1. In the **Okta Admin dashboard**, create a new app:
-   - Platform: **Web**
-   - Sign-on method: **SAML 2.0**
-2. **General Settings**: App name `dbt`, logo optional.
-3. **SAML Settings** — uses your dbt **login URL slug** (auto-generated, alphanumeric+dashes, e.g. `dbt-labs-afk123`):
-   - **Single Sign On URL**: `https://YOUR_AUTH0_URI/login/callback?connection=<login-slug>`
-   - **Audience URI (SP Entity ID)**: `urn:auth0:<YOUR_AUTH0_ENTITYID>:<login-slug>`
-   - **Relay State**: `<login-slug>`
-   - **Name ID format**: Unspecified
-   - **Application username**: Custom → `user.getInternalProperty("id")` for SSO-only setups; **switch to Email** if you intend to enable SCIM (SCIM requires email-format usernames)
-   - **Update username on**: Create and update
-4. **Attribute Statements** (user attributes):
-   - `email` / Unspecified / `user.email`
-   - `first_name` / Unspecified / `user.firstName`
-   - `last_name` / Unspecified / `user.lastName`
-5. **Group Attribute Statements**:
-   - Name: `groups`, Format: Unspecified, Filter: `Matches regex` → `.*`
-   - Use a more restrictive filter (e.g. `Starts with: DBT_CLOUD_`) if your org has many groups — **Okta only returns 100 groups per user**
-6. Finish: select "I'm an Okta customer adding an internal app" → "This is an internal app".
-7. Click **View Setup Instructions** — copy: Identity Provider SSO URL, Identity Provider Issuer, X.509 Certificate.
-
-*dbt Cloud side:*
-1. Navigate to **Account Settings → Enterprise → Single Sign On** → **Edit**.
-2. Fill in:
-   - **Log in with**: Okta
-   - **Identity Provider SSO URL**: from Okta
-   - **Identity Provider Issuer**: from Okta
-   - **X.509 Certificate**: from Okta
-3. **Save**.
-
-*Login URL for end users:* `https://YOUR_ACCESS_URL/enterprise-login/<login-slug>` (region-specific access URL + the slug used in Okta).
-
-*Supported flows:* IdP-initiated SSO, SP-initiated SSO, Just-in-Time provisioning.
-
-*Architect-level gotchas:*
-- **Cert expiry is manual** — Okta admin must regenerate the X.509 cert before expiry; there's no auto-renewal. An expired cert breaks SSO entirely.
-- **SCIM-vs-SSO username conflict**: SSO-only setups can use `user.getInternalProperty("id")` for username, but SCIM requires Email format. Pick the right value upfront if SCIM is in scope — switching later is disruptive.
-- **IdP group names ↔ dbt group names must match exactly (case-sensitive)** — the most common cause of "SSO works but groups don't apply" tickets.
-- **Admins keep password fallback** by default even when SSO is enforced (so a broken IdP doesn't lock everyone out). This can be explicitly restricted, but doing so removes the recovery path.
-- **Other IdPs**: same flow, different setup pages — Microsoft Entra ID (formerly Azure AD), Google Workspace, and a generic SAML 2.0 guide. The dbt-side fields are the same; only the Okta-specific UI changes.
-
-**RBAC Design**
-- Permissions assigned at **group level only** — no individual permission assignments
-- Most permissive group wins when user is in multiple groups
-- License type caps effective permissions regardless of group (but only applies to Developer and Analyst — IT and Read-Only ignore groups entirely)
-
-**Default Groups — Behavior Details**
-
-| Group | Permissions | Mutable? | New users auto-added? |
-|---|---|---|---|
-| Owner | Full account admin (Account Admin) | **No — immutable** | No |
-| Member | Broad access; restricts only billing/security features | Yes | **Yes** |
-| Everyone | Customizable to org needs | Yes | **Yes** |
-
-- New users are added to **both Member AND Everyone** by default — not just one
-- Owner group permissions **cannot be changed** — immutable by design
-- To restrict default new-user access: customize Member and Everyone permissions, or disable auto-add
-
-**Adding/Removing Users — Plan Differences**
-- Enterprise: one place (Account Settings → Users)
-- Starter: two places — Account Settings seat count AND billing seat count separately
-
-**Environment-Level Permissions**
-- Cannot restrict access to a **specific** environment — only to environment **types** (Production, Staging, etc.)
-- Cannot restrict to specific resources (e.g., jobs only within one environment)
-- Write access to environments grants: create/edit/delete runs and jobs — but **NOT** environment creation or deletion
-- Typical persona → environment access mapping:
-  - Standard Developer: Dev + General
-  - QA/Testing: Dev + Staging + General
-  - Production Deployer: all environments
-  - Data Analyst: read-only all
-
-**RBAC Design — Additional Rules**
-- IdP group names must match dbt group names **exactly** (case-sensitive) for SSO/SCIM sync to work
-- Group membership syncs only **on user login** — not in real-time
-- Disable **"Add all new users by default"** on the Everyone group for proper RBAC isolation
-- Best practice: **1:1 IdP-to-dbt group mapping** for predictable sync behavior
-- A group can grant environment write access (job/run ops) even if the permission set is read-only — these are independent controls
-
-**IP Restrictions**
-- Allowlist CIDR ranges for account access
-- Service tokens respect IP restrictions
-- Supplementary blocklist: deny specific IPs within an allowlisted CIDR
-
-**Password Requirements** (when not using SSO)
-- Minimum 9 characters; must include uppercase, lowercase, numeral, and special character
+**IP restrictions (Enterprise)**
+- Account Settings → IP Restrictions. Rules are Allow or Deny, in CIDR. With only an allowlist, everything else is denied. Deny carves exceptions out of an allowed range.
+- Applies to the UI, the API, PATs and **service tokens**. You can't save if your own IP is in a deny range.
 
 ### Gotcha Q&A
 
-**Q: A user is in an Admin group but can't edit anything. What's wrong?**
-A: Their license type is Read-Only or IT. Licenses always override group permissions.
+**Q: A user is in the Account Admin group but has a Read-Only license. What can they do?**
+A: Read-only. The license wins.
 
-**Q: You lose a service token immediately after creating it. How do you recover it?**
-A: You can't. Delete it, create a new one, update all integrations.
+**Q: You give an IT-licensed user the Account Admin group so they can manage projects. Can they?**
+A: No. IT users don't inherit permission sets. IT access is fixed.
 
-**Q: SSO is enforced. An admin gets locked out of the IdP. How do they access dbt?**
-A: Admins retain password login by default even when SSO is enforced (unless explicitly restricted).
+**Q: Who can create service tokens?**
+A: Someone with a Developer license and account admin permissions. Read-Only and IT licenses can't use service tokens.
 
-**Q: A service token API call returns 403. Credentials are valid. What's the most likely cause?**
-A: The calling IP is not on the account's IP allowlist. Service tokens honor IP restrictions just like human logins.
+**Q: You lose a service token right after creating it. How do you recover it?**
+A: You can't. Create a new one, update integrations, delete the old one.
 
-**Q: You need read-only Catalog access for a contractor, scoped to one project. What's the right setup?**
-A: Read-Only license + Viewer permission set scoped to that specific project.
+**Q: A service token gets 403 on every call but is valid. Why?**
+A: The caller's IP isn't on the account's IP allowlist.
 
-**Q: Your team uses SCIM from Okta. A user is removed from the Okta group. What happens in dbt?**
-A: SCIM automatically deprovisions them — their dbt account is deactivated.
+**Q: Which token for a production pipeline?**
+A: A service token with the minimum permission sets. PATs inherit one person's permissions and are for user-specific access.
 
-**Q: Most permissive group wins — give a scenario where this creates an unintended security issue.**
-A: A user is in both the "Everyone" group (Viewer) and "Data Team" group (Developer). They get Developer access account-wide — any guest added to "Everyone" inherits this if they're also a Data Team member, or vice versa if "Everyone" is accidentally elevated.
+**Q: Can one token have Job Admin on project A and Read-Only on project B?**
+A: Yes, a service token can hold several permission sets, each scoped to all or specific projects.
 
-**Q: You configure SCIM with Okta but group assignments in dbt aren't reflecting the IdP groups. What's wrong?**
-A: IdP group names must match dbt group names **exactly** (case-sensitive). Also, syncs only happen on user login — changes don't propagate until the user next authenticates.
+**Q: What's the Semantic Layer permission set for?**
+A: Querying the Semantic Layer with a service token.
 
-**Q: A developer has read-only permissions but can still create and trigger job runs in the production environment. How?**
-A: Environment write access (job/run operations) and permission set read-only are independent controls. A group can grant write access to environment types without granting model/project write permissions. Review the group's environment access settings.
+**Q: Which license does an SSO user get if they're in IdP groups mapped to both Read-Only and Developer?**
+A: Developer. With no match, the default license.
 
-**Q: You want new contractors to join the org but not automatically get access to any projects. What setting do you change?**
-A: Disable **"Add all new users by default"** on the Everyone group. Without this, every new user is auto-added to Everyone and inherits its permissions.
+**Q: Where do you set up license mappings, and what goes in?**
+A: Account settings → Groups & Licenses → License mappings. Comma-separated IdP group names for Read-Only and Developer.
 
-**Q: A project-level Admin user tries to create a new dbt project but the option is greyed out. Why?**
-A: Project-level Admin cannot create new projects — only **Account Admin** and **Project Creator** (account-level) can. Admin gives full control within existing projects only.
+**Q: SSO is on and the IdP is down. Can admins still get in?**
+A: Yes, with a password, unless you turned off "Allow password logins for account administrators".
 
-**Q: You assign Security Admin to a user so they can also run jobs during an incident. They still can't trigger jobs. Why?**
-A: Security Admin has zero access to jobs, runs, or environments. It's purely for user/group/SSO/IP management. Assign Job Admin or Job Runner instead.
+**Q: New contractors shouldn't see any projects. What do you change?**
+A: New users join both Member and Everyone. Customize both groups' permissions.
 
-**Q: A Database Admin user wants to write a quick fix in the IDE. Can they?**
-A: No. Database Admin manages data platform configs and Semantic Layer settings but has no IDE access. IDE requires Developer, Analyst, or Admin role.
+**Q: A project Admin can't create a project. Why?**
+A: Only Account Admin and Project Creator can.
 
-**Q: What's the difference between Stakeholder and Viewer?**
-A: Stakeholder is **project-level** — read-only for that project, audit log excludes sensitive info. Viewer is **account-level** — read-only across everything, audit log includes sensitive info.
+**Q: A Security Admin can't open Jobs during an incident. Why?**
+A: Security Admin has no access to jobs, runs, environments or the IDE. Use Job Admin or Job Runner.
 
-**Q: You need a service token that can only query the Semantic Layer. Which permission set?**
-A: Semantic Layer — it's the only permission set that's service-token exclusive and scoped purely to Semantic Layer queries.
-
-**Q: You assign the Analyst role. What can that user do that a Developer cannot?**
-A: Both have IDE access, but Analyst explicitly can run jobs in read-only mode. Developer has personal credential management. In practice they're similar — Analyst is designed for data consumers who occasionally need to run queries, not for model builders.
-
-**Q: You assign an IT-licensed user to the Account Admin group so they can manage projects. They still can't create projects. Why?**
-A: IT-licensed users do not inherit rights from any permission sets — group assignment has no effect. IT access is fixed: Security Admin + Billing Admin + edit Connections. To create projects, the user needs a Developer license.
-
-**Q: A Read-Only user is added to the Developer group for a specific project. Can they now edit models in the IDE?**
-A: No. Read-Only users do not inherit from permission sets regardless of group. Their access is identical to every other Read-Only user — view artifacts and the deploy section only.
-
-**Q: A job has `dbt source freshness` as a checkbox and `dbt build` as a step. The freshness check fails (sources are stale). Does `dbt build` still run?**
-A: Yes. The source freshness checkbox failure is isolated — `dbt build` still runs. If you need stale sources to block the build, add `dbt source freshness` as a **command step** instead of a checkbox.
-
-**Q: `dbt docs generate` is configured as a checkbox. The docs generation fails. Does the job fail?**
-A: Not necessarily — the job can still succeed if all steps after the docs generate step succeed. Checkbox step failures are isolated from the overall job outcome.
+**Q: Which set gives read-only access including the sensitive audit log?**
+A: Account Viewer. Stakeholder and Read-Only exclude sensitive information.
 
 ---
 
@@ -1254,26 +954,71 @@ A: Not necessarily — the job can still succeed if all steps after the docs gen
 
 ### Reference Notes
 
-**Email Notifications**
-- Configured per job; triggered on success/failure; simplest option; no plan restrictions
+**Job notifications** (profile icon → **Notification settings**)
+- Channels: **email**, **Slack**, **Microsoft Teams**.
+- Events: **Succeeds** (no warnings or errors), **Warns**, **Fails**, **Is canceled**.
+  - Warns comes from warning-level lines in data tests or source freshness. A run can show Success in the UI and still trigger Warns.
+- **Email**: you need to be a developer user, account admin, or have the **Notification Manager** permission set (Enterprise). Developers set up their own. Admins can send to another internal user, or to an **external email** (a Teams channel address, PagerDuty).
+- **Slack**: an account admin links the workspace (Account settings → Integrations → OAuth). Only Account Admins can connect or disconnect it. **Public channels only.**
+- **Teams**: an account admin links the Teams app.
+- IT license users can **receive** job notifications but can't **configure** them.
+- Runs cancelled by the inactivity cleanup (10 minutes) may not reach Slack. Use email or webhooks.
+- The docs don't give a plan limit for these.
 
 **Webhooks**
-- Three event types:
-  - `job.run.started` — fires at job start
-  - `job.run.completed` — fires after completion AND artifact ingestion (delayed but data is ready)
-  - `job.run.errored` — fires immediately on error (fastest, but API artifacts may not be available yet)
-- **5-retry auto-disable**: After 5 consecutive delivery failures, webhook silently deactivates — no alert sent
-- 10-second response window; must return 2xx; timeout = failure
-- SHA256 payload signature in Authorization header for validation
-- 30-day delivery history per webhook
+- Needs a **Starter or Enterprise-tier** plan, a multi-tenant or AWS single-tenant deployment, and a destination that accepts **Authorization headers** (Azure Logic Apps and Power Automate may not).
+- Create: Account settings → **Webhooks** → Create webhook. Name, description, events, jobs (**empty = all jobs**), endpoint URL. Save → you get a secret token.
+- Who can create: Enterprise-tier → Account Admin, Admin or Developer permission set (UI or service token). Starter → Developer license.
+- **Events**
+  - `job.run.started`: run started.
+  - `job.run.completed`: run finished, **success or failure**. Fires once metadata and artifacts are ingested and available from the Admin and Discovery APIs.
+  - `job.run.errored`: fires **immediately**. Artifacts may not be ingested yet.
+  - Subscribe to both → **two notifications** when a job errors.
+  - Need API data? Use `completed` and filter on `runStatus`.
+- **Verify the sender**: the `Authorization` header holds a **SHA256 HMAC of the request body**, keyed with your secret token. Compute it on your server and compare. Docs strongly recommend it.
+- **Delivery**: JSON payload. **10-second timeout.** dbt retries each event **5 times**. Delivery log kept **7 days** (Recent Deliveries).
+- **Auto-archive**: after **1,000 consecutive failed deliveries or 7 consecutive days** of failures, whichever comes first.
+  - Reactivate: change the endpoint URL (UI), or API `PUT` with `active: true`.
+- Payload: `accountId`, `webhookId`, `eventId`, `timestamp`, `eventType`, `webhookName`, and `data` (`jobId`, `jobName`, `runId`, `environmentId`, `projectName`, `dbtVersion`, `runStatus`, `runStatusCode`, `runStatusMessage`, `runReason`, `runStartedAt`...). Examples: Running = 3, Success = 10, Errored = 20.
+- API: `/api/v3/accounts/{id}/webhooks/subscriptions` (list, create), `.../subscription/{id}` (get, update, delete), `.../subscription/{id}/test`.
+
+**Scheduling and limits** (details in Topic 4)
+- Intervals run every N hours from midnight UTC with a constant gap. Cron for exact times. All UTC.
+- If a job runs longer than its schedule, the scheduler keeps only the newest queued run.
+- A deploy or CI job is deactivated after **100 consecutive failures**.
+- Memory: **600 MiB** per run, all accounts. Default threads: **4**.
 
 ### Gotcha Q&A
 
-**Q: A webhook fires on `job.run.errored` and your handler queries the dbt API for run artifacts. The artifacts aren't there. Why?**
-A: `job.run.errored` fires before artifact ingestion. Use `job.run.completed` when you need artifacts available at handler time.
+**Q: Your handler calls the dbt API for artifacts on `job.run.errored` and finds none. Why?**
+A: `errored` fires immediately, before artifacts are ingested. Use `completed` and filter on `runStatus`.
 
-**Q: A critical webhook hasn't fired for 3 days and no alert was sent. What happened?**
-A: 5 consecutive delivery failures silently auto-disabled the webhook. Monitor webhook status proactively — dbt does not notify you when a webhook is disabled.
+**Q: You subscribe a webhook to both `completed` and `errored`. A job fails. How many notifications?**
+A: Two.
+
+**Q: Your endpoint takes 25 seconds to respond. What happens?**
+A: dbt's webhook timeout is 10 seconds, so dbt records a failed delivery. Respond right away and process asynchronously.
+
+**Q: When does dbt archive a failing webhook?**
+A: After 1,000 consecutive failed deliveries or 7 consecutive days of failures, whichever is first. Each event is retried 5 times.
+
+**Q: How do you reactivate it?**
+A: Change the endpoint URL in the UI, or `PUT` with `active: true` through the API.
+
+**Q: How do you check a webhook really came from dbt?**
+A: Compare the `Authorization` header with a SHA256 HMAC of the request body, keyed with your secret token.
+
+**Q: How long can you review webhook deliveries?**
+A: 7 days (Recent Deliveries).
+
+**Q: Which events can job notifications use?**
+A: Succeeds, warns, fails, is canceled.
+
+**Q: Can Slack notifications go to a private channel?**
+A: No, public channels only.
+
+**Q: Who can create webhooks on Enterprise?**
+A: Account Admin, Admin or Developer permission set. On Starter, a Developer license.
 
 ---
 
@@ -1281,235 +1026,156 @@ A: 5 consecutive delivery failures silently auto-disabled the webhook. Monitor w
 
 ### Reference Notes
 
-**Environment Resolution for Cross-Project Refs — MEMORIZE THIS**
+**Plans:** cross-project `ref()` and project dependencies = **Enterprise and Enterprise+**. Multi-project lineage in Catalog = Enterprise / Enterprise+.
 
-| Consuming job's environment type | Resolves to producer's... |
+**Setting up projects (upstream = producer, downstream = consumer)**
+- **Upstream project needs:**
+  - Models with `access: public` and at least one successful job run after you define `access`.
+  - A **Production** environment with at least one successful deployment job (it produces `manifest.json`).
+  - If it has a **Staging** environment: a successful deployment job there too.
+  - Each project `name` must be unique in the account.
+- **Downstream project:**
+  1. `dependencies.yml` at the project root.
+  2. List the upstream project under `projects:` with `name:` (**case-sensitive**, must match the upstream's `dbt_project.yml` `name`).
+  3. Use a two-argument ref: `ref('jaffle_finance', 'monthly_revenue')`.
+- Two-way dependencies are **stepwise**: A runs and produces public models → B adds A and runs → A adds B. dbt checks for **cycles across projects** and errors. Two-way is fine if there's no node-level cycle.
+- You can **select** upstream models in a downstream job, but you **can't build** them. Upstream models are built by the upstream project's own jobs.
+- Semantic Layer: cross-project refs only work in the legacy YAML spec.
+- Sources can't be shared across projects. Use a **foundational project** that holds the source staging models and exposes them as public. No two sources in a mesh should point to the same relation.
+- Run downstream jobs after upstream ones with **"Run when another job finishes"** (see Topic 4).
+
+**How cross-project refs resolve** (via a metadata service, not installed code)
+
+| Downstream environment | Resolves to upstream |
 |---|---|
-| Development | Staging (if exists), else Production |
-| Staging | Staging |
 | Production | Production |
+| Staging | Staging if it exists, else Production |
+| Development | Staging if it exists, else Production |
 
-- Automatic — no explicit configuration required
-- If the upstream project has **no Staging environment**, development jobs fall back to Production (data risk in production!)
-- This is why Staging environments are architecturally mandatory in a Mesh deployment
+- Upstream Staging is used as soon as it exists, with **no fail-over to Production**, even with zero successful Staging runs. Safe order: create it unmarked → run a job → mark it Staging (Topic 3).
+- Staging is optional. Production is the required one.
 
-**Project Dependencies vs Packages**
+**Packages vs project dependencies**
+- Package: source code is installed and runs as part of your project.
+- Project dependency: the metadata service resolves refs. Upstream models are **not** parsed or run in your project.
 
-| | Packages | Project Dependencies |
-|---|---|---|
-| Plan required | Any | Enterprise+ |
-| What's shared | Full source code | Public models via metadata service |
-| Governance | Harder | Clean — narrower scope |
-| Recommended for Mesh | No | Yes |
+**Model access** (governance features apply to **models only**, not sources, seeds or snapshots)
 
-**Model Access Levels**
-- `private`: same group only; not referenceable outside
-- `protected` (default): same project or installed package
-- `public`: any group, package, or project; cross-project refs require Enterprise+
+| Access | Who can `ref` it |
+|---|---|
+| `private` | Same group |
+| `protected` (default) | Same project, or an installed package |
+| `public` | Any group, package or project |
 
-**Model Contracts — Full YAML**
+- Docs recommend `private` for new models. Changing to `public`: rerun a production job to apply it.
+- Set in YAML under `config:` (`access: public`).
+- **Ephemeral models can't be `public`** (parse error).
+- `access` does **not** grant warehouse `SELECT`. Use the `grants` config.
+- Private violation: `DbtReferenceError` at parse time ("not allowed because the referenced node is private to the finance group").
+- Package `restrict-access: True`: only `public` models can be referenced outside the package. Default is `False`.
+- There's no per-project allowlist. `public` means any project.
+
+**Groups**
+- Defined under `groups:` with a `name` and an `owner` (**name or email**, one is required), plus optional `description`.
+- Assign with the `group` config: project level (`+group`), YAML `config:`, or in the model file. Each node belongs to **one** group.
+- Members can be models, tests, seeds, snapshots, analyses, metrics. Not sources or exposures.
+- Platform user groups (RBAC) are separate. The docs don't link them.
+
+**Model contracts**
 ```yaml
 models:
   - name: dim_customers
     config:
       contract:
-        enforced: true       # opt-in; must be explicit
+        enforced: true
     columns:
       - name: customer_id
         data_type: int
         constraints:
           - type: not_null
       - name: customer_name
-        data_type: string    # must declare ALL columns — partial not allowed
+        data_type: string
 ```
+- Enforced → every column needs `name` and `data_type`. Column order isn't checked.
+- A preflight check runs at build time. If the output doesn't match, **the model doesn't build**.
+- **Breaking changes:** removing a column, changing a `data_type`, removing or modifying a constraint (v1.6+), removing a contracted model (v1.9+: error if versioned, warning if not).
+- **Materializations:** table ✅. View: names and types only, no constraints. Incremental: only `on_schema_change: append_new_columns` or `fail`. ❌ Python models, materialized views, ephemeral, custom materializations, BigQuery recursive CTEs.
+- Contracts check the output shape at build time. Data tests check content after the build.
 
-**Constraint Enforcement by Platform**
+| Constraint | Postgres | Snowflake / Redshift | BigQuery | Databricks |
+|---|---|---|---|---|
+| not_null | enforced | enforced | enforced | enforced |
+| primary_key, foreign_key | enforced | defined only | defined only | defined only |
+| unique | enforced | defined only | not supported | not supported |
+| check | enforced | not supported (dbt skips it) | not supported | enforced |
 
-| Constraint | Postgres | Snowflake | BigQuery | Redshift | Databricks |
-|---|---|---|---|---|---|
-| not_null | ✅ enforced | ✅ enforced | ✅ enforced | ✅ enforced | ✅ enforced |
-| primary_key | ✅ enforced | ⚠️ defined only | ⚠️ defined only | ⚠️ defined only | ⚠️ defined only |
-| foreign_key | ✅ enforced | ⚠️ defined only | ⚠️ defined only | ⚠️ defined only | ⚠️ defined only |
-| unique | ✅ enforced | ⚠️ defined only | ❌ unsupported | ⚠️ defined only | ⚠️ defined only |
-| check | ✅ enforced | ❌ unsupported | ❌ unsupported | ❌ unsupported | ✅ enforced |
-
-- Only **Postgres** enforces `primary_key`, `foreign_key`, `unique`; only **Postgres and Databricks** enforce `check`
-- Incremental + contract: only `on_schema_change: append_new_columns` or `fail` — `sync_all_columns` not supported
-- **BigQuery recursive CTEs** cannot use contracts
-- **Ephemeral models** cannot have `access: public` (parsing error); can be `protected` or `private`
-- Contracts enforce: removing columns, changing types, modifying constraints are all breaking changes
-
-**Model Versions — Full YAML**
+**Model versions**
 ```yaml
 models:
   - name: dim_customers
     latest_version: 2
     versions:
-      - v: 2                         # default file: dim_customers_v2.sql
+      - v: 2
         columns:
           - include: all
             exclude: [country_name]
       - v: 1
-        defined_in: dim_customers    # overrides file name → maps to dim_customers.sql
-        config:
-          alias: dim_customers       # overrides the database relation name
+        defined_in: dim_customers
         deprecation_date: 2026-06-01
 ```
-- Default file naming: `<model_name>_v<N>.sql`; use `defined_in` to override
-- `deprecation_date`: triggers warning for consumers still pinned on that version
-- Unpinned `ref('dim_customers')` → always resolves to `latest_version`
-- Pinned: `ref('dim_customers', v=1)` or cross-project: `ref('project', 'dim_customers', v=1)`
-- Never mutate a contracted public model in place — always create a new version
+- `latest_version` defaults to the **numerically highest** version. Set it lower and higher versions are **prereleases**.
+- Unpinned `ref('dim_customers')` → latest version (dbt warns if a prerelease exists). Pinned: `ref('dim_customers', v=1)`. Cross-project: `ref('project', 'model', v=1)`.
+- File: `<model>_v<N>.sql` by default. Override with `defined_in`. Relation name defaults to `<model>_v<N>` (use `alias` to change it).
+- `deprecation_date`: dbt notifies consumers when new versions appear or a version is slated for deprecation.
+- Breaking change on a contracted public model → add a **new version**, bump `latest_version`, set `deprecation_date` on the old one, let consumers migrate, then remove it.
 
-**Model Groups — YAML Syntax**
-```yaml
-# groups.yml (define the group)
-groups:
-  - name: finance
-    owner:
-      email: finance@company.com   # required: name OR email
-    description: "Finance team data assets"
-
-# models/schema.yml (assign model to group)
-models:
-  - name: revenue
-    config:
-      group: finance
-      access: private    # only finance group members can ref this
-
-# OR bulk assign in dbt_project.yml
-models:
-  marts:
-    finance:
-      +group: finance
-```
-- **Governance groups ≠ RBAC user groups** — completely orthogonal concepts:
-  - Model groups = data ownership/team boundary
-  - User groups = access permissions/who can do what
-- Each model belongs to exactly **one** group
-- Private model referenced outside its group → error: "is not allowed because the referenced node is private to [group]"
-
-**`dependencies.yml` and Cross-Project Ref Syntax**
-```yaml
-# dependencies.yml (in consumer project root)
-packages:
-  - package: dbt-labs/dbt_utils
-    version: 1.1.1
-projects:
-  - name: jaffle_finance   # CASE SENSITIVE — must match dbt_project.yml exactly
-```
-```sql
--- Cross-project ref
-select * from {{ ref('jaffle_finance', 'monthly_revenue') }}
--- Pinned version
-select * from {{ ref('jaffle_finance', 'dim_customers', v=1) }}
-```
-
-**Architect Rules**
-- Node-level cyclic dependencies: NOT allowed
-- Bidirectional project dependencies must be set up **stepwise**: producer runs first → consumer adds dependency and runs → producer optionally adds reverse dependency
-- Multiple projects cannot share `sources:` directly — use a foundational project with public staging models
-- `dbt build --select` does NOT trigger upstream project runs across project boundaries
-- Public models visible org-wide in Catalog; protected/private require project access
-- **Indirect dependency visibility**: Explorer/Catalog shows only DIRECTLY referenced public models; Studio IDE lineage shows full indirect upstream tree
-- **Case sensitivity**: project names in `dependencies.yml` must exactly match `dbt_project.yml` — mismatches cause silent resolution failures
-
-**Selecting and Orchestrating Across Mesh Projects**
-
-Once an upstream project is added to a downstream project's `dependencies.yml`, dbt loads it into the downstream manifest under the **same namespace as installed dbt Hub packages**. This means the standard `package:` selector method works on Mesh upstream projects:
-
-```bash
-# In the DOWNSTREAM project, after adding `jaffle_finance` to dependencies.yml:
-dbt ls    --select package:jaffle_finance         # list upstream public models pulled into manifest
-dbt build --select package:jaffle_finance+        # build everything downstream of any upstream model
-dbt build --select state:modified+ --exclude package:jaffle_finance  # CI: skip upstream nodes
-dbt build --exclude package:jaffle_finance package:dbt_utils         # exclude all third-party + Mesh
-dbt run   --select +package:jaffle_finance                            # local nodes that flow FROM upstream
-```
-
-- The package name is the upstream project's `name:` field in `dbt_project.yml` — **case-sensitive** match (same rule as `dependencies.yml`).
-- Hub packages and Mesh upstream projects share the namespace — `--exclude package:jaffle_finance package:dbt_utils` (space = union) excludes both.
-- Exclusion is evaluated **after** selection, so an upstream model picked up via `state:modified+` is still removed by `--exclude package:upstream`.
-
-**Critical limitation: `--select` does NOT trigger an upstream build**
-
-The `package:upstream_project` selector only **scopes the current invocation's manifest** — it filters which nodes are referenced/built **inside the downstream job**. dbt **never** crosses the project boundary to invoke a build in the upstream project. Cross-project orchestration is a job-level concern, not a selector concern:
-
-| Goal | Mechanism |
-|---|---|
-| Build only my downstream code, treating upstream models as already-built | `--select state:modified+ --exclude package:upstream` (resolution against upstream's prod via metadata service) |
-| Trigger a downstream build whenever upstream finishes | **dbt Cloud "Run when another job finishes"** chaining (Starter+ in general; cross-project Mesh chaining still requires Enterprise+ because of Mesh itself) — set in downstream Job → Triggers → Run when another job finishes → select parent project + upstream job + completion statuses |
-| Coordinate upstream-then-downstream within one orchestrator | External orchestrator (Airflow / Prefect / dbt Cloud APIs) — there is no single dbt CLI invocation that builds both |
-| Audit "what of mine depends on upstream" | `dbt ls --select +package:upstream` |
-| Know which upstream public models the downstream actually consumes | `dbt ls --select package:upstream` |
-
-**Common orchestration trap — `state:modified` is project-local**
-
-`state:modified` compares the **current downstream manifest** against the **prior downstream manifest**. It does **not** detect upstream-side changes:
-
-- An upstream column rename, contract update, or version bump does NOT show up as `state:modified` in the downstream project.
-- The downstream only learns about upstream changes when (a) the metadata service refreshes the upstream's published manifest and (b) the downstream re-resolves refs at parse time.
-- To catch upstream contract changes that affect downstream models, the **upstream's** CI must use `state:modified.contract` and produce artifacts the downstream defers against.
-- `source_status:fresher+` does **not** flag upstream public models — those are consumed via `ref()`, not `source()`. Use chained jobs ("Run after job") to trigger downstream when upstream rebuilds, not freshness selectors.
-
-**Common patterns**
-
-```bash
-# Downstream Slim CI — build only my changed nodes, treat upstream as immutable, defer to prod
-dbt build \
-  --select state:modified+ \
-  --exclude package:jaffle_finance \
-  --defer --state ./prod-artifacts
-
-# Downstream impact analysis — what of MY code depends on the upstream?
-dbt ls --select +package:jaffle_finance --resource-type model
-
-# Smoke test only the bridge layer between upstream and downstream
-dbt build --select package:jaffle_finance+1   # 1-hop downstream of any upstream model
-```
-
-**How to Recognize dbt Mesh in the Lineage Graph (Explorer/Catalog)**
-- **Project boundary nodes**: Upstream projects appear as distinct labeled project nodes — not just individual models. You see a project-level grouping separate from your own project's DAG.
-- **Cross-project edges**: Lineage edges cross project boundaries; the upstream model is labeled with its source project name (e.g., `jaffle_finance.monthly_revenue`)
-- **Public model badges**: Models shared via cross-project refs show their `public` access designation in the graph — private/protected models from other projects are NOT visible
-- **Multi-project DAG view**: Explorer shows a multi-namespace graph spanning >1 project; a single-project setup only ever shows one project's models
-- **"Find public models" in Catalog**: dbt Catalog has a dedicated view listing public models from all projects — only present when Mesh is configured
-- **Contrast with single-project**: In a non-Mesh setup, all lineage is within one project namespace; no project boundary nodes appear, no cross-project edges exist
+**Catalog and Mesh** (Enterprise / Enterprise+)
+- Nodes for another project show a **project icon** next to the project name. Downstream projects show as separate project nodes with dashed lines.
+- Only **directly referenced public models** from other projects appear. Indirect ones show only in the Studio IDE lineage.
+- Upstream project's Relationships tab: counts every project that lists it in `dependencies.yml`, even without a `ref`.
+- Account lineage → **List view** = table of projects and their public models.
+- Details of a public model or a private one need permission on the project that defines it.
 
 ### Gotcha Q&A
 
-**Q: How can you tell from the lineage graph in dbt Explorer/Catalog that a project is part of a dbt Mesh?**
-A: Three visual indicators: (1) **project boundary nodes** — upstream projects appear as distinct labeled project groupings, not just flat model nodes; (2) **cross-project edges** — lineage edges cross project namespaces with the upstream model labeled by its source project; (3) **public model badges** — models shared via cross-project ref show their `public` access designation. In a single-project setup, none of these appear — all nodes belong to one namespace.
+**Q: An upstream project has no Staging environment. Where does a downstream dev job resolve refs?**
+A: Upstream Production.
 
-**Q: An upstream project has only a Production environment. A developer's IDE job can't resolve a cross-project ref. Why?**
-A: Development jobs resolve to the upstream's Staging environment first. If none exists, they fall back to Production — but dev credentials may not have Production access. Fix: add a Staging environment to the upstream project.
+**Q: You add `access: public` but the downstream ref still fails. What else?**
+A: `dependencies.yml` in the downstream project (exact project name), an Enterprise or Enterprise+ plan, and successful production runs in the upstream.
 
-**Q: You set `access: public` on a model but a downstream team in another project still can't ref it. What's missing?**
-A: Two things required: **Enterprise+ plan** AND `project_dependencies` configured in the downstream project's `dependencies.yml`. `access: public` alone is insufficient.
+**Q: You set up a two-way dependency in one go and both fail. Why?**
+A: It must be stepwise. A runs and produces public models → B adds A and runs → A adds B.
 
-**Q: A contract-enforced public model needs to remove a column. How do you handle this without breaking downstream consumers?**
-A: Create a new version (`_v2`), bump `latest_version`, set a `deprecation_date` on v1, notify consumers to migrate. Never modify a contracted public model's structure directly.
+**Q: A downstream job selects an upstream public model. Does it build?**
+A: No. You can select it but not build it. Build it with the upstream project's jobs.
 
-**Q: Can you enforce a model contract on a Python model?**
-A: No. Contracts only work on SQL materializations. The logic must be reimplemented as a SQL model if governance is required.
+**Q: How do you run a downstream job when the upstream job finishes?**
+A: "Run when another job finishes" on the downstream job: pick the upstream project and job.
 
-**Q: Your Mesh has ProjectA and ProjectB both depending on ProjectC. ProjectA needs a model from ProjectB. How should this be structured?**
-A: Route the shared model through ProjectC (the foundational project) — ProjectB exposes it as public there. Avoid lateral A↔B dependencies, which risk circular references.
+**Q: Can projects share a `sources:` block?**
+A: No. Use a foundational project that exposes public staging models.
 
-**Q: An upstream public model's column type changes without a contract. When does the downstream project break?**
-A: Silently — the downstream project breaks only when it next parses and runs against the new schema. This is why contracts on public models are critical: without one, breaking changes are undetected until runtime.
+**Q: You set `access: public` on an ephemeral model.**
+A: Parse error.
 
-**Q: You want to use `check` constraints on a Snowflake model's contract. Will it work?**
-A: No. Snowflake does not support `check` constraints in dbt contracts. Only `not_null` is enforced on Snowflake; `primary_key` and `foreign_key` are documented but not enforced.
+**Q: A contract only declares 3 of 15 columns.**
+A: Every column needs `name` and `data_type` when the contract is enforced.
 
-**Q: You add `access: public` to an ephemeral model. What happens?**
-A: dbt throws a parsing error. Ephemeral models cannot be public. They can be `protected` or `private` only.
+**Q: A contract on an incremental model uses `sync_all_columns`.**
+A: Not allowed. Only `append_new_columns` or `fail`.
 
-**Q: You set up a bidirectional dependency between ProjectA and ProjectB simultaneously. Both fail to resolve. Why?**
-A: Cross-project dependencies must be set up stepwise. The producer must run first to generate its manifest, then the consumer adds the dependency and runs. Setting both up at the same time creates a bootstrap chicken-and-egg problem.
+**Q: Can you use a `check` constraint on Snowflake?**
+A: No. Snowflake doesn't support `check`, so dbt skips it. Postgres and Databricks enforce it.
 
-**Q: A governance group named `finance` exists in dbt. A user in the "Finance" RBAC user group tries to reference a private model in the `finance` governance group. Can they?**
-A: Not automatically — governance groups and RBAC user groups are completely separate concepts. Model group membership governs which models can reference private assets. User group membership governs UI/job access permissions. They don't interact.
+**Q: You need to drop a column from a contracted public model.**
+A: New version, bump `latest_version`, set `deprecation_date` on the old version, let consumers migrate.
+
+**Q: `access: public` is set but the consumer gets "Insufficient privileges" from the warehouse.**
+A: `access` is only a dbt rule. Grant warehouse access with the `grants` config.
+
+**Q: An installed package's protected models can be referenced by the root project. How do you stop that?**
+A: By default (`restrict-access: False`) a root project can ref a package's protected models. Set `restrict-access: True` in the package so only public ones are visible.
 
 ---
 
@@ -1517,73 +1183,117 @@ A: Not automatically — governance groups and RBAC user groups are completely s
 
 ### Reference Notes
 
-- **Catalog vs dbt Docs**: Docs = static site, all plans; Catalog = dynamic real-time metadata, Starter+
-- Catalog reflects **production environment** only by default — dev/staging models don't appear
-- Cross-project lineage: Enterprise+; shows multi-project DAG including public model references
-- Column-level lineage: Enterprise+ only; **SQL models only** — Python models not supported
-- **Data health signals**: Healthy / Caution / Degraded — driven by test results and source freshness
-- **Lenses**: DAG overlays for materialization type, test status, query volume, cost — **one attribute at a time**; switch lenses on the same lineage graph to read the intersection visually (no combined-overlay view)
-- **Model query history**: consumption tracking — use for optimization prioritization and deprecation impact assessment
-- Non-dbt warehouse assets can be ingested for complete lineage
+**What it is and who gets it**
+- Catalog = dynamic view of your project's resources, lineage and model consumption, showing the latest **production (or staging)** state. Plans: **Starter, Enterprise, Enterprise+**. Developer and read-only seats can browse it.
+- dbt Docs is a different thing. dbt Docs v2 is an open-source static site you generate locally (`dbt docs generate`). It is **not available in the dbt platform**. Catalog is populated automatically when jobs run with dbt v2.
 
-**Model Query History — Full Detail**
-- **Plan required**: Enterprise or higher — not available on Starter
-- **What it tracks**: SELECT queries against a model by downstream users/tools; **excludes** dbt model builds and test executions — consumption only
-- **How to enable**: Orchestration → Environments → select Production environment → Settings → scroll to Query History → click "Test Permissions" → check "Enable query history" → Save
-- **Four places to view it**:
-  1. **Performance charts** — "Most consumed models" under Project details
-  2. **Lineage graph** — apply the **Lenses** overlay for query volume
-  3. **Models list** — Resources section; sort by consumption column
-  4. **Catalog overview** — consumption query count directly on model page
-- **Use cases**: identify high-traffic models (prioritize optimization), assess downstream impact before deprecating a model, inform infrastructure spending decisions
-- Permissions gate visibility: public models org-wide, protected/private require project access
+| Feature | Starter | Enterprise | Enterprise+ |
+|---|:-:|:-:|:-:|
+| Lineage, resource browsing, global navigation | ✅ | ✅ | ✅ |
+| Data health signals | ✅ | ✅ | ✅ |
+| Model performance, project recommendations | ❌ | ✅ | ✅ |
+| Column-level lineage | ❌ | ✅ | ✅ |
+| Multi-project lineage | ❌ | ✅ | ✅ |
+| Model query history | ❌ | ✅ | ✅ |
+| Downstream exposures, data health tile | ❌ | ✅ | ✅ |
+| Cost Insights (separate feature) | ❌ | ✅ | ✅ |
 
-**CI Jobs Do NOT Update Catalog**
-- Only **deployment jobs** (scheduled or manual) in production or staging environments update Catalog metadata
-- CI jobs are explicitly excluded — they don't reflect production state
-- Common trap: relying on CI runs to keep Catalog fresh; it won't work
+**What updates Catalog**
+- Prereqs: a **production or staging** deployment environment (set a single environment per project as production or staging) and at least one successful job run in it.
+- Metadata refreshes after **each job run in the production or staging environment** (deploy and merge jobs).
+- **CI jobs do NOT update Catalog.** They don't reflect production state.
+- dbt v2 jobs refresh Catalog automatically on every run. No `dbt docs generate` step.
+- Some metadata needs specific commands: test results need `dbt test` or `dbt build`, source freshness needs `dbt source freshness`.
+- **Inactivity purge:** no job runs in the past **3 months** → all metadata for that environment is purged. Run a job at least every 3 months.
+- A deleted model disappears after the next job run that no longer includes it.
 
-**Catalog Inactivity Purge**
-- Environments with **no successful job run in 3+ months** are automatically purged from Catalog
-- Must run at least one successful deployment job every 3 months to remain visible
+**Data health signals** (all plans, Preview)
+- Statuses: **Healthy, Caution, Degraded, Unknown** (Unknown = no job run has processed the resource).
+- Shown for models, sources, exposures.
+- Models:
+  - **Degraded:** failed to build, failing tests, or an upstream source is stale (freshness errored or hasn't run in 30 days).
+  - **Caution:** not built in 30 days, no tests, test warnings, source freshness warning, or missing description.
+  - **Healthy:** built in the last 30 days, tests configured and passing, has a description, fresh sources.
+- Sources: Degraded = freshness error. Caution = freshness warning, not configured, not run in 30 days, or no description.
 
-**Production Job Designation (How to Configure)**
-- Path: Account Settings (click account name in left sidebar) → select project → **Edit** → **Artifacts** section
-- Select which job(s) generate documentation and source freshness artifacts
-- Only **one job per project** should be designated — multiple jobs cause conflicting artifact states
+**Lenses** (lineage graph, lower-right corner): map layers that tag nodes. **One lens at a time.**
 
-**`dbt docs generate` — What It Creates**
-
-| File | Contents |
+| Lens | Shows |
 |---|---|
-| `manifest.json` | Model metadata, lineage graph, run results, node definitions |
-| `catalog.json` | Column-level information introspected from the database |
-| `sources.json` | Source definitions and freshness check results |
+| Resource type | models, tests, seeds, saved queries… |
+| Materialization type | Table, View, Incremental, Ephemeral, Materialized View |
+| Latest status | status of the resource's latest execution in this environment |
+| Model layer | Marts: `fct_` / `dim_` prefix or `/marts/`. Intermediate: `int_` or `/int/`, `/intermediate/`. Staging: `stg_` or `/staging/` |
+| Test status | latest test results. Several tests with different results → **worst case** |
+| Consumption query history | query count over a period |
 
-**Cost Insights (Enterprise+ / Fusion)**
-- Requires: Fusion engine enabled + state-aware orchestration enabled
-- Refresh lag: up to **24 hours** — not for real-time billing reconciliation
-- Cost formulas: Snowflake = credits × price per credit; BigQuery = TiB processed × price (cached queries = $0); Databricks = proportional DBU allocation based on query runtime
+There is **no Cost lens**.
+
+**Column-level lineage (CLL)**
+- Plans: Enterprise / Enterprise+. Open the resource → **Columns** tab → column card.
+- Works for **models, sources, snapshots**. Lineage comes from the SQL `select` statements.
+- **Python models can't be parsed** → shows a Python error. Other errors: parsing (SQL too complex or ambiguous) and unknown (e.g. hardcoded table names instead of `ref`).
+- Only `select` usage counts. Joins and filters aren't reflected.
+- Refreshes after each run in production or staging.
+
+**Model query history** (Enterprise / Enterprise+)
+- Tracks **consumption queries**: `select` queries against a model in your warehouse query logs, aggregated daily. **Excludes** dbt builds and test runs.
+- Warehouses: Snowflake (Enterprise edition or higher), BigQuery, Redshift, Databricks.
+- Needs a **production** environment with a successful run, dbt admin permissions, and warehouse query-history permissions for the production deployment credentials (e.g. Snowflake: `GRANT DATABASE ROLE SNOWFLAKE.GOVERNANCE_VIEWER` by `ACCOUNTADMIN`).
+- New PROD environments: enabled automatically. Existing PROD: Orchestration → Environments → PROD env → Settings → Edit → **Query History** → **Test Permissions** → **Enable query history** → Save. If it fails on persistent errors dbt disables it; re-run **Test Permissions** to re-enable.
+- View it in: **Performance** → "Most consumed models" (up to 3 months), **Lenses → Consumption queries** (last 30 days), **Resources → Models** sorted by Consumption.
+- It uses warehouse credits.
+
+**Cost Insights** (Enterprise / Enterprise+)
+- Needs a supported warehouse (Snowflake, BigQuery, Databricks, Redshift Preview), platform **metadata credentials** (test must pass), and at least one **production** job.
+- **dbt State / state-aware orchestration is needed only for cost-reduction data**, not for cost data. The docs don't mention Fusion as a requirement.
+- Cost formulas: Snowflake = credits × price per credit. BigQuery on-demand = data processed × price per TiB. BigQuery capacity = compute time × price per slot hour (cached queries = $0). Databricks = DBUs allocated by query runtime × cost per DBU.
+- Calculated **once daily** (~17:00 UTC), completed days only. Estimates for optimization, **not billing reconciliation**.
+- Viewed in: project dashboard, Catalog model page, job details page.
+
+**Other Catalog features**
+- **Model performance** (Enterprise / Enterprise+): most executed, longest-running, most failures. Lookback 1 week to 3 months (default two weeks).
+- **External metadata ingestion** (Enterprise / Enterprise+, Preview): shows warehouse tables and views not defined in dbt. **Snowflake only** for now. Runs daily at 5 PM UTC, and each time you save credentials.
+- **Multi-project lineage**: see Topic 7. Needs public models and project dependencies. Direct references only.
+
+**Artifact files**
+- `manifest.json`: project nodes, config and lineage.
+- `catalog.json`: warehouse metadata about the tables and views your project builds (column names, types, stats).
+- `sources.json`: source freshness results (legacy artifact).
+
+**Artifacts setting (legacy)**
+- Account settings → project → Edit → **Artifacts** picks the job for **legacy dbt Docs** and source freshness links.
+- Catalog doesn't use it. It reads metadata from the Discovery API after each production/staging run.
+- Docs say to associate **one** production job per project.
 
 ### Gotcha Q&A
 
-**Q: A model exists in dev but doesn't appear in Catalog. Why?**
-A: Catalog reflects production only. Dev and staging models are not surfaced until they're in a production job run.
+**Q: A model built in your IDE dev schema isn't in Catalog. Why?**
+A: Catalog shows production and staging deployment runs. Development builds don't appear.
 
-**Q: Column-level lineage is missing for a high-value Python model. Why?**
-A: Column-level lineage only works for SQL models. Python model internals are opaque to dbt's lineage parser.
+**Q: CI jobs run fine but Catalog hasn't changed. Why?**
+A: CI jobs don't update Catalog. Production or staging deployment jobs do.
 
-**Q: CI jobs are running successfully but the Catalog hasn't updated in days. Why?**
-A: CI jobs do not update Catalog metadata. Only production or staging deployment jobs do. Ensure a scheduled deployment job with `dbt docs generate` is running.
+**Q: A project's Catalog data disappeared after a quiet period.**
+A: No job runs for 3 months purges the environment's metadata. Run a job at least every 3 months.
 
-**Q: A project disappears from Catalog after a quiet period. What happened?**
-A: Environments with no successful job run in 3+ months are automatically purged. Schedule a lightweight job (even just `dbt compile`) to run at least quarterly.
+**Q: Column-level lineage is missing for a Python model.**
+A: Python models can't be parsed. CLL works for SQL models, sources and snapshots.
 
-**Q: You designate two jobs to generate artifacts for the same project. What's the risk?**
-A: The jobs will overwrite each other's artifacts, causing inconsistent Catalog state. Only one job per project should be designated for artifact generation.
+**Q: Which plan do you need for column-level lineage, query history, multi-project lineage?**
+A: Enterprise or Enterprise+. Not Starter.
 
-**Q: What does `catalog.json` contain that `manifest.json` doesn't?**
-A: `catalog.json` contains column-level information introspected directly from the database (column names, types, row counts). `manifest.json` contains node definitions, lineage, and model metadata from the dbt project itself.
+**Q: A model shows Caution but all tests pass.**
+A: Caution also comes from a missing description, no tests, or not built in 30 days.
+
+**Q: Does query history count dbt's own runs?**
+A: No. Only consumption `select` queries. dbt builds and tests are excluded.
+
+**Q: Do you need Fusion for Cost Insights?**
+A: The docs don't list Fusion as a requirement. State-aware orchestration or dbt State is only for cost-reduction data.
+
+**Q: Can you combine two lenses on one graph?**
+A: No. Switch between them.
 
 ---
 
@@ -1591,140 +1301,106 @@ A: `catalog.json` contains column-level information introspected directly from t
 
 ### Reference Notes
 
-**Hook Types — Scope & Configuration**
+**Hook types**
 
-| Hook | Scope | Where Configured | Runs Per |
-|---|---|---|---|
-| `pre-hook` | Model, Seed, Snapshot | `dbt_project.yml`, `config()` block, YAML property file | Each resource |
-| `post-hook` | Model, Seed, Snapshot | `dbt_project.yml`, `config()` block, YAML property file | Each resource |
-| `on-run-start` | Project only | `dbt_project.yml` only | Each dbt command |
-| `on-run-end` | Project only | `dbt_project.yml` only | Each dbt command |
-
-- `on-run-start` / `on-run-end` fire once per dbt command (`dbt run`, `dbt build`, `dbt test`, `dbt seed`, `dbt snapshot`, `dbt compile`, `dbt docs generate`) — not per model
-- `on-run-start` / `on-run-end` **cannot** be set in model config blocks or YAML property files — `dbt_project.yml` only
-- Seeds support hooks via `dbt_project.yml` or YAML property files only — no in-file `config()` block (seeds are CSV files)
-
-**Transaction Behavior — CRITICAL**
-
-- By default, `pre-hook` and `post-hook` run **inside** the same transaction as the model build
-- If model creation **fails**: post-hook **does not run** (transaction is rolled back before post-hook executes)
-- If a post-hook **fails**: the whole transaction rolls back — including the model creation
-- To run a hook **outside** the transaction (so it persists even on model failure), use dictionary syntax:
-
-```yaml
-post_hook:
-  - sql: "INSERT INTO audit_log VALUES ({{ this }}, current_timestamp)"
-    transaction: false
-```
-
-**Execution Order — Multiple Hooks**
-
-When hooks are defined at multiple scopes, all execute — they **do not override each other**:
-1. Package-level hooks run first
-2. `dbt_project.yml` project-level hooks
-3. Model `config()` block / YAML property file hooks
-4. Within the same scope: hooks execute in definition order (top to bottom)
-
-If 3 post-hooks are in `dbt_project.yml` and 2 in a model's `config()` block, all 5 execute.
-
-**Context Variables Available in Hooks**
-
-| Variable | Available In | Description |
+| Hook | Runs | Configured in |
 |---|---|---|
-| `{{ this }}` | `pre-hook`, `post-hook` | Relation object for the current model (database.schema.identifier) |
-| `{{ model }}` | `pre-hook`, `post-hook` | The full dbt graph node for the current model |
-| `{{ results }}` | `on-run-end` ONLY | List of result objects for every resource that ran |
-| `{{ schemas }}` | `on-run-end` ONLY | List of schemas written to during the run |
-| `{{ database_schemas }}` | `on-run-end` ONLY | List of (database, schema) tuples |
+| `pre-hook` | Before each model, seed or snapshot is built | `dbt_project.yml` (`+pre-hook`), `config()` block, YAML property file (`config:`) |
+| `post-hook` | After each model, seed or snapshot is built | Same as above |
+| `on-run-start` | At the start of a command | `dbt_project.yml` |
+| `on-run-end` | At the end of a command | `dbt_project.yml` |
 
-- Using `{{ results }}` in a `pre-hook` or `post-hook` returns `None` — **silent failure**, no error
-- Each object in `results` has: `res.node.unique_id`, `res.status` (success/error/skipped), `res.message`
+- `on-run-start` / `on-run-end` run for: `dbt build`, `compile`, `docs generate`, `run`, `seed`, `snapshot`, `test`. Once per command, not per model.
+- Each hook takes one SQL string or a **list** of strings.
+- Seeds and snapshots take hooks in `dbt_project.yml` or their YAML property file. A CSV seed has no `config()` block.
+- Hooks can call macros: `"{{ some_macro() }}"`. If the macro uses execution-time values (model configs, `ref()`), wrap the call in an **extra set of curly braces**.
 
-**`on-run-end` behavior on partial failure:**
-- If the run partially fails (some models succeed, some fail), `on-run-end` **still executes**
-- `results` will contain result objects for all resources including failures — use `res.status` to filter
+**Ordering and accumulation**
+- Hooks from every scope are all applied. Model hooks don't replace project hooks.
+- Order: (1) hooks from dependent **packages** run before the active package's hooks, (2) hooks in `dbt_project.yml` run before hooks in the model itself, (3) within one place, in the order defined.
 
-**Calling Macros from Hooks**
+**Transactions**
+- On adapters that use transactions (the docs name **Postgres and Redshift**), pre- and post-hooks run **inside the same transaction** as the model build. A failing hook fails that transaction.
+- To run a hook outside the transaction:
+  - `before_begin("...")` / `after_commit("...")` helper macros, or
+  - the dictionary form: `{sql: "...", transaction: false}`
+- **Don't use this on Snowflake, BigQuery, Spark or Databricks.** dbt doesn't use transactions there.
+- Typical reasons: `VACUUM` on Redshift (can't run in a transaction), or an audit record that should persist even if the build fails.
 
-Hooks can call macros. If the macro uses runtime context (e.g., `this`, model configs), wrap the call with an extra Jinja layer:
+**Context variables**
 
-```yaml
-post_hook: "{{ my_grant_macro(this, 'reporter') }}"
-```
+| Variable | Where |
+|---|---|
+| `{{ this }}` | pre- and post-hooks: the current relation |
+| `schemas` | `on-run-end` only: schemas dbt built models into |
+| `database_schemas` | `on-run-end` only: `(database, schema)` pairs, for runs across several databases |
+| `results` | `on-run-end` only: one Result object per resource that executed |
 
-**Common Use Cases**
+- Outside `on-run-end`, `schemas`, `database_schemas` and `results` are **none**. No error.
+- Result fields used in the docs: `res.node.unique_id`, `res.status`, `res.message`. The docs example shows both a `success` and an `error` result in one `on-run-end` summary.
 
-| Use Case | Hook Type | Notes |
-|---|---|---|
-| GRANT permissions post-build | `post-hook` | Standard Snowflake pattern |
-| Audit logging on every model | `post-hook` with `transaction: false` | Must be outside transaction to persist |
-| Warehouse resume before run | `on-run-start` | Project-level, fires once |
-| VACUUM / ANALYZE | `post-hook` with `transaction: false` | Redshift — must be outside transaction |
-| Temp table cleanup | `post-hook` | Cleanup after model completes |
-| Notify on run completion | `on-run-end` | Use `results` to report pass/fail counts |
+**Grants: use the `grants` config first**
+- Docs: define grants as resource configs **whenever possible** (models, seeds, snapshots):
+  ```yaml
+  models:
+    +grants:
+      select: ['reporter', 'bi']
+  ```
+- dbt makes the grants **match exactly**: grantees not listed are revoked. No `grants` config on a node = dbt doesn't touch its grants.
+- Child config replaces parent grantees per privilege. Use `+select` to **add** instead.
+- Use a post-hook only when the config can't do it: objects other than tables and views, masking or row access policies, future grants, advanced permissions. Databricks `READ_METADATA` / `USAGE` need post-hooks.
+- Spark / Delta Lake OSS doesn't support `grants`.
 
----
+**Operations (`dbt run-operation`)**
+- Runs a macro on demand. Not a resource in your project.
+- Unlike hooks, the macro must **execute** its SQL with a `statement` block or `run_query()`. Otherwise dbt just returns the SQL as a string.
+- Arguments are a **YAML string** mapped to the macro's keyword arguments:
+  ```bash
+  dbt run-operation grant_select --args '{role: reporter}'
+  ```
+- dbt v1.12+: `dbt run-operation --sql "..."` runs a SQL/Jinja string directly. Can't be combined with a macro name or `--args`.
+- `run-operation` doesn't enforce model `access` or `group` rules. A macro can `ref()` a private model.
+- Docs use cases: UDFs, Snowflake warehouse management, Redshift vacuum, creating shares or clones.
 
-### Operations (`dbt run-operation`)
-
-- Executes a **macro directly** as a standalone command — no model materialization
-- Does NOT become part of the DAG; not tied to any resource lifecycle
-- Manual invocation only — not automatic like hooks
-- Can be used as a command step in a dbt Cloud job (alongside `dbt run`, `dbt build`, etc.)
-
-**Syntax:**
-```bash
-dbt run-operation <macro_name> --args '{key: value, key2: value2}'
-```
-Arguments are passed as a YAML dictionary and mapped to macro keyword arguments.
-
-**Example macro definition:**
-```sql
-{% macro grant_select(role) %}
-  GRANT SELECT ON ALL TABLES IN SCHEMA {{ target.schema }} TO ROLE {{ role }};
-{% endmacro %}
-```
-```bash
-dbt run-operation grant_select --args '{role: analyst}'
-```
-
-- The macro must use `run_query()` or a statement block to actually execute SQL — operations do not auto-execute SQL from a return value
-- Transaction behavior is controlled within the macro logic itself
-
-**Hooks vs. Operations — Decision Table**
+**Hooks vs operations**
 
 | | Hooks | Operations |
 |---|---|---|
-| Invocation | Automatic at lifecycle points | Manual (`dbt run-operation`) |
-| Part of DAG | Yes | No |
-| Runs per | Resource or command | Once per explicit call |
-| Best for | Routine automated tasks (grants, audit) | Ad-hoc tasks (backfills, one-time grants) |
-| Fails if model fails | post-hook skipped; on-run-end still fires | N/A |
-
----
+| How they run | Automatically with a model, seed, snapshot or run | You invoke them (CLI or a job command step) |
+| Executes SQL | The hook string is run as SQL | The macro must run it itself |
+| Typical use | Per-resource or per-run automation | One-off admin tasks |
 
 ### Gotcha Q&A
 
-**Q: A post-hook inserts an audit log row. The model fails mid-execution. Does the audit row get inserted?**
-A: No. By default, post-hooks run inside the model's transaction. If the model fails, the transaction rolls back and the post-hook never executes. Fix: add `transaction: false` to the hook definition so it runs outside the transaction.
+**Q: A post-hook inserts an audit row on Redshift. The model fails. Is the row there?**
+A: Not by default. The hook is in the model's transaction. Use `transaction: false` (or `after_commit`).
 
-**Q: A team defines 2 post-hooks in `dbt_project.yml` and 2 more in a model's `config()` block. How many post-hooks execute?**
-A: All 4. Hooks at different scopes accumulate — model-level hooks do not override project-level hooks. Execution order: project-level hooks first, then model-level hooks.
+**Q: You add `transaction: false` to a Snowflake hook. Good idea?**
+A: No. The docs say not to use it where dbt doesn't support transactions (Snowflake, BigQuery, Spark, Databricks).
 
-**Q: You use `{{ results }}` in a `post-hook` to log model outcomes. It always returns None. Why?**
-A: `{{ results }}` is only available in `on-run-end` hooks. It returns None in `pre-hook` and `post-hook` — silently, with no error.
+**Q: 2 post-hooks in `dbt_project.yml`, 2 more in the model. How many run?**
+A: All 4. Project hooks first, then the model's.
 
-**Q: Your `on-run-end` hook sends a Slack notification. Three models in the run fail. Does the hook still fire?**
-A: Yes. `on-run-end` executes after the run completes regardless of partial failures. The `results` variable will contain entries for all resources including failed ones — filter on `res.status == 'error'` to report failures.
+**Q: `{{ results }}` in a post-hook returns none. Why?**
+A: It only exists in `on-run-end`. Elsewhere it's none, with no error.
 
-**Q: You need to run a VACUUM command after each model build on Redshift. Using a standard post-hook, it fails. Why?**
-A: `VACUUM` on Redshift cannot run inside a transaction. The post-hook runs inside the model's transaction by default. Fix: use `transaction: false` in the hook definition.
+**Q: Your `on-run-end` hook needs the schemas touched in a multi-database run.**
+A: `database_schemas` gives `(database, schema)` pairs. `schemas` is just schema names.
 
-**Q: When is `dbt run-operation` the right choice over a post-hook?**
-A: When the task is ad-hoc (one-time grant, backfill, maintenance) and not tied to a specific model's lifecycle. Use hooks for automated tasks that should run every time a model or run executes. Operations are also preferable when you need to run the same macro across multiple models from a single command step.
+**Q: Where do you set `on-run-end`?**
+A: `dbt_project.yml`.
 
-**Q: A seed file has a post-hook to grant SELECT after each seed load. Where must this be configured?**
-A: In `dbt_project.yml` or a YAML property file — seeds do not support in-file `config()` blocks (they are CSV files, not SQL files).
+**Q: You need to grant SELECT on every model to a role. Hook or config?**
+A: The `grants` config. Hooks only for what it can't do.
+
+**Q: `dbt run-operation` on a macro that only returns a `DROP TABLE` string. Nothing happens.**
+A: The macro must execute the SQL with `run_query()` or a `statement` block.
+
+**Q: How do you pass arguments to `run-operation`?**
+A: `--args` with a YAML string, e.g. `--args '{role: reporter}'`.
+
+**Q: How do you call a macro from a hook?**
+A: Put the call in Jinja braces in the hook string: `post_hook: "{{ my_macro(this) }}"`.
 
 ---
 
@@ -1732,16 +1408,16 @@ A: In `dbt_project.yml` or a YAML property file — seeds do not support in-file
 
 > Study these first if time is short.
 
-1. **Cross-project env resolution table** — dev→staging/prod, staging→staging, prod→prod
-2. **Deferral type trade-offs** — self-deferral vs prod deferral vs none; what breaks each
+1. **Cross-project env resolution table** — dev and staging → upstream staging if it exists, else production; prod → prod
+2. **Deferral options** — Environment (recommended) vs This Job (older self-deferral) vs No deferral; CI defaults to Production
 3. **License always overrides group permissions** — know specific failure scenarios
 4. **CI job behavior** — no run slots, temp schema lifecycle, smart cancellation for same PR
 5. **Command ordering** — `dbt build` before `dbt sl validate`; checkbox vs step for source freshness
 6. **Governance trifecta** — model access + contracts + versions and how they interact
 7. **Service token gotchas** — one-time visibility, IP restrictions, rotation pattern
-8. **Webhook reliability** — 5-failure silent auto-disable; `errored` vs `completed` timing
+8. **Webhook reliability** — archived after 1,000 failures or 7 days; 7-day delivery log; `errored` vs `completed` timing
 9. **Manifest state loss** — same `--state` and `--target-path` = non-idempotent deferral
-10. **Enterprise+ feature gate** — cross-project refs, project dependencies, column lineage, Advanced CI
+10. **Plan gates** — cross-project refs, project dependencies and Advanced CI (Enterprise, Enterprise+); PrivateLink (Enterprise+)
 
 ---
 
@@ -1751,11 +1427,11 @@ A: In `dbt_project.yml` or a YAML property file — seeds do not support in-file
 |---|---|---|---|---|
 | Job chaining | No | Yes | Yes | Yes |
 | Cross-project refs | No | No | Yes | Yes |
-| Project dependencies | No | No | No | Yes |
+| Project dependencies | No | No | Yes | Yes |
 | Advanced CI (compare) | No | No | Yes | Yes |
 | SSO / SCIM | No | No | Yes | Yes |
-| Column-level lineage | No | No | No | Yes |
-| Multi-project lineage | No | No | No | Yes |
-| PrivateLink | No | No | Yes | Yes |
+| Column-level lineage | No | No | Yes | Yes |
+| Multi-project lineage | No | No | Yes | Yes |
+| PrivateLink | No | No | No | Yes |
 | Azure DevOps native | No | No | Yes | Yes |
 | Scheduling min interval | 10 min | — | — | — |

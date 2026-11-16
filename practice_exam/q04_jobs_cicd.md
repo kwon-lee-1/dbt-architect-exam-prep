@@ -10,20 +10,20 @@
 
 Two developers each open a separate PR at the same time against the same dbt project. What does dbt Cloud do with the two CI job runs?
 
-- A) Queues them serially — the second run waits for the first to complete.
-- B) Cancels the older run and starts only the newest one.
-- C) Runs them concurrently — each gets its own isolated temp schema.
-- D) Runs them concurrently only if the account has more than 1 run slot.
+- A) Cancels the older run and starts only the newest one.
+- B) Queues them serially — the second run waits for the first to complete.
+- C) Runs them concurrently only if the account has more than 1 run slot.
+- D) Runs them concurrently — each gets its own isolated temp schema.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: C**
+> **✅ Correct: D**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | Serial queuing is the behavior for the *same PR* with multiple commits — not different PRs. |
-> | **B) ❌ Incorrect** | Smart cancellation (cancelling stale builds) applies when the *same PR* receives a new commit, not when two different PRs run simultaneously. |
-> | **C) ✅ Correct** | **Different PRs run concurrently** — each CI run gets its own isolated temp schema (`dbt_cloud_pr_<job_id>_<pr_id>`). CI jobs bypass the run slot system entirely, so this concurrency is not limited by available slots. |
-> | **D) ❌ Incorrect** | CI jobs bypass the slot system — concurrent CI does not depend on run slot count. |
+> | **A) ❌ Incorrect** | Smart cancellation (cancelling stale builds) applies when the *same PR* receives a new commit, not when two different PRs run simultaneously. |
+> | **B) ❌ Incorrect** | Serial queuing is the behavior for the *same PR* with multiple commits — not different PRs. |
+> | **C) ❌ Incorrect** | CI jobs bypass the slot system — concurrent CI does not depend on run slot count. |
+> | **D) ✅ Correct** | **Different PRs run concurrently** — each CI run gets its own isolated temp schema (`dbt_cloud_pr_<job_id>_<pr_id>`). CI jobs bypass the run slot system entirely, so this concurrency is not limited by available slots. |
 >
 > > 💡 **Key rule**: Different PRs → concurrent CI (each isolated temp schema). Same PR → serial with smart cancellation.
 
@@ -38,22 +38,22 @@ A CI job is configured with the following command sequence:
 
 The CI job consistently fails on step 1. What is the cause?
 
-- A) `dbt sl validate` is not a valid command — the correct syntax is `dbt semantic-layer validate`.
-- B) `dbt sl validate` must run before `dbt build` so validation happens against pre-existing models.
-- C) `dbt build` must run before `dbt sl validate` — models must be materialized in the CI schema before semantic validation can run.
-- D) `--select state:modified+` is not supported by `dbt sl validate`.
+- A) `--select state:modified+` is not supported by `dbt sl validate`.
+- B) `dbt build` must run before `dbt sl validate` — that is the order the docs list.
+- C) `dbt sl validate` is not a valid command — the correct syntax is `dbt semantic-layer validate`.
+- D) `dbt sl validate` must run before `dbt build` so validation happens against pre-existing models.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: C**
+> **✅ Correct: B**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | `dbt sl validate` is the correct command syntax. |
-> | **B) ❌ Incorrect** | This has the order backwards and contradicts the actual requirement. |
-> | **C) ✅ Correct** | `dbt sl validate` validates the Semantic Layer against **materialized models in the CI schema**. If `dbt build` hasn't run yet, the models don't exist in the CI schema and semantic validation has nothing to validate against — it fails. `dbt build` must always precede `dbt sl validate`. |
-> | **D) ❌ Incorrect** | `--select` flags are supported by `dbt sl validate`. The ordering, not the selector, is the issue. |
+> | **A) ❌ Incorrect** | `--select` flags are supported by `dbt sl validate`. The ordering, not the selector, is the issue. |
+> | **B) ✅ Correct** | The docs' CI setup lists `dbt build --select state:modified+` first, then `dbt sl validate --select state:modified+`. |
+> | **C) ❌ Incorrect** | `dbt sl validate` is the correct command syntax. |
+> | **D) ❌ Incorrect** | This has the order backwards and contradicts the actual requirement. |
 >
-> > 💡 **Key rule**: `dbt build` must **precede** `dbt sl validate`. Models must exist in CI schema before semantic validation.
+> > 💡 **Key rule**: `dbt build` goes **before** `dbt sl validate`. That's the order in the docs' CI setup.
 
 ---
 
@@ -64,8 +64,8 @@ A deploy job has `dbt source freshness` configured as a **checkbox** (not a comm
 
 - A) The job immediately fails and `dbt build` does not run.
 - B) The job continues — `dbt build` runs normally because checkbox failures are isolated from the overall job.
-- C) `dbt build` runs but only for models that do not depend on the stale source.
-- D) The job pauses and waits for the source to be updated before continuing.
+- C) The job pauses and waits for the source to be updated before continuing.
+- D) `dbt build` runs but only for models that do not depend on the stale source.
 
 > [!success]- Answer & Explanations
 > **✅ Correct: B**
@@ -74,8 +74,8 @@ A deploy job has `dbt source freshness` configured as a **checkbox** (not a comm
 > |---|---|
 > | **A) ❌ Incorrect** | This would be the behavior if `dbt source freshness` were a **command step** — failures in command steps block all subsequent steps. |
 > | **B) ✅ Correct** | When `dbt source freshness` is configured as a **checkbox**, its failure is **isolated** — it does not propagate to the overall job status and does not prevent subsequent command steps from running. `dbt build` runs regardless of the freshness result. If you need stale sources to block the build, add `dbt source freshness` as a command step instead. |
-> | **C) ❌ Incorrect** | `dbt build` runs the full selected scope — it does not intelligently filter out models with stale upstream sources. |
-> | **D) ❌ Incorrect** | Jobs do not pause and wait — they proceed or fail. |
+> | **C) ❌ Incorrect** | Jobs do not pause and wait — they proceed or fail. |
+> | **D) ❌ Incorrect** | `dbt build` runs the full selected scope — it does not intelligently filter out models with stale upstream sources. |
 >
 > > 💡 **Key rule**: Checkbox failures are **isolated**. Source freshness as checkbox = won't fail the job. As command step = blocks all subsequent steps.
 
@@ -87,18 +87,18 @@ A deploy job has `dbt source freshness` configured as a **checkbox** (not a comm
 A production job fails before any models run because of a warehouse connection timeout during job initialization. An on-call engineer runs `dbt retry` to recover. What happens?
 
 - A) `dbt retry` re-runs the entire job from scratch since no nodes completed.
-- B) `dbt retry` is a no-op — it reads `run_results.json` to find the failure point, but no nodes were recorded. The engineer must trigger a full job rerun manually.
-- C) `dbt retry` automatically detects the infrastructure failure and increases the connection timeout before retrying.
+- B) `dbt retry` automatically detects the infrastructure failure and increases the connection timeout before retrying.
+- C) `dbt retry` is a no-op — it reads `run_results.json` to find the failure point, but no nodes were recorded. The engineer must trigger a full job rerun manually.
 - D) `dbt retry` reconnects to the warehouse and resumes from the last successfully compiled node.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: C**
 >
 > | | |
 > |---|---|
 > | **A) ❌ Incorrect** | `dbt retry` does not do a full rerun — it reads from `run_results.json` and resumes from the recorded failure point. If there's no recorded failure point, it has nothing to do. |
-> | **B) ✅ Correct** | `dbt retry` reads `run_results.json` to find which nodes failed and resumes from that point. If the job failed before **any nodes executed** (infrastructure failure, connection error during init), `run_results.json` contains no nodes to resume from — `dbt retry` is a **no-op**. The engineer must trigger a full job rerun. |
-> | **C) ❌ Incorrect** | `dbt retry` has no automatic timeout adjustment capability. |
+> | **B) ❌ Incorrect** | `dbt retry` has no automatic timeout adjustment capability. |
+> | **C) ✅ Correct** | `dbt retry` reads `run_results.json` to find which nodes failed and resumes from that point. If the job failed before **any nodes executed** (infrastructure failure, connection error during init), `run_results.json` contains no nodes to resume from — `dbt retry` is a **no-op**. The engineer must trigger a full job rerun. |
 > | **D) ❌ Incorrect** | `dbt retry` works at the node level (compiled models), not at the connection level. |
 >
 > > 💡 **Key rule**: `dbt retry` = no-op on infrastructure failures. Only works when nodes are recorded in `run_results.json`.
@@ -106,26 +106,26 @@ A production job fails before any models run because of a warehouse connection t
 ---
 
 ### Q5. ⭐
-> **Subdomain 4.5 — Scheduling drift**
+> **Subdomain 4.5 — Scheduling: exact clock times**
 
-A team schedules a dbt job to run "every 2 hours" using interval scheduling. The first run starts at 3:05 AM. When will the next two runs start?
+A team needs a job to run at exactly 4:05 AM UTC every day. Which schedule type should they use?
 
-- A) 4:00 AM and 6:00 AM — interval mode aligns to clock hours.
-- B) 5:05 AM and 7:05 AM — interval mode tracks elapsed time from the previous run start.
-- C) 5:05 AM and 7:05 AM only if the previous run completed within 2 hours.
-- D) 4:05 AM and 6:05 AM — the 2-hour interval starts from when the previous run completes, not when it starts.
+- A) Intervals, every 24 hours.
+- B) Specific hours, `4`.
+- C) Cron, `5 4 * * *`.
+- D) Intervals, every 2 hours.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: C**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | Interval mode does NOT align to clock hours. That behavior requires cron syntax. |
-> | **B) ✅ Correct** | Interval scheduling measures **elapsed time from the previous run start** — it is not clock-aligned. A first run at 3:05 AM → next at 5:05 AM → next at 7:05 AM. This "scheduling drift" is why teams that need exact clock-aligned schedules should use **cron syntax** instead of interval mode. |
-> | **C) ❌ Incorrect** | The interval is from run *start*, not run *completion*. Though if a run exceeds the interval, the scheduler cancels queued runs and keeps only the newest. |
-> | **D) ❌ Incorrect** | The interval is from run start, not completion. |
+> | **A) ❌ Incorrect** | Intervals run every N hours counted from midnight UTC. You can't pick minute 5. |
+> | **B) ❌ Incorrect** | Specific hours takes a comma-separated list of whole UTC hours, so this would run at 4:00. |
+> | **C) ✅ Correct** | Cron gives exact times. `5 4 * * *` runs at 4:05 AM UTC. `L` (last day of month) and `MON#1` (first Monday) also work. |
+> | **D) ❌ Incorrect** | Intervals of 2 hours can't produce a 4:05 daily run. |
 >
-> > 💡 **Key rule**: Interval scheduling **drifts** — it's elapsed time, not clock-aligned. Use **cron syntax** for fixed clock times.
+> > 💡 **Key rule**: Intervals = every N hours from midnight UTC. Specific hours = whole UTC hours. Cron = exact times. Everything is UTC, with no daylight saving adjustment.
 
 ---
 
@@ -134,20 +134,20 @@ A team schedules a dbt job to run "every 2 hours" using interval scheduling. The
 
 Advanced CI (Compare Changes) is enabled on a CI job. After every PR, the Compare tab shows hundreds of "deleted rows" even though the production data hasn't changed. What configuration is missing?
 
-- A) The model is missing a primary key constraint — without it, Advanced CI can't perform row-level comparison.
-- B) `event_time` is not configured on the model. Without it, full tables are compared — the CI's smaller date window looks like deleted rows vs. production.
+- A) The `dbt compare` toggle is set to "Continue on error" instead of "Stop on error."
+- B) The model is missing a primary key constraint — without it, Advanced CI can't perform row-level comparison.
 - C) The CI and production environments are on different database hosts, preventing an accurate comparison.
-- D) The `dbt compare` toggle is set to "Continue on error" instead of "Stop on error."
+- D) `event_time` is not configured on the model. Without it, full tables are compared — the CI's smaller date window looks like deleted rows vs. production.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: D**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | Missing primary key would cause a "Primary key missing" error — not false "deleted rows." |
-> | **B) ✅ Correct** | Without `event_time`, dbt compares **full tables**. CI jobs typically build a smaller time window of data than production — all rows outside the CI window appear as "deleted" in production but not CI. With `event_time` configured, dbt filters both tables to the **overlapping time range** before comparing, eliminating false positives. |
+> | **A) ❌ Incorrect** | Stop/continue on error controls linting behavior — it has no effect on row comparison results. |
+> | **B) ❌ Incorrect** | Missing primary key would cause a "Primary key missing" error — not false "deleted rows." |
 > | **C) ❌ Incorrect** | Different database hosts would cause the comparison to **fail completely**, not produce false deletion results. |
-> | **D) ❌ Incorrect** | Stop/continue on error controls linting behavior — it has no effect on row comparison results. |
+> | **D) ✅ Correct** | Without `event_time`, dbt compares **full tables**. CI jobs typically build a smaller time window of data than production — all rows outside the CI window appear as "deleted" in production but not CI. With `event_time` configured, dbt filters both tables to the **overlapping time range** before comparing, eliminating false positives. |
 >
 > > 💡 **Key rule**: Without `event_time` → full table comparison → CI's smaller date window = false "deleted rows" on every run.
 
@@ -158,57 +158,57 @@ Advanced CI (Compare Changes) is enabled on a CI job. After every PR, the Compar
 
 A company enables Advanced CI's Compare Changes feature. A security reviewer discovers that warehouse dynamic data masking policies are not being applied to the rows visible in the Compare tab. Is this expected behavior?
 
-- A) No — this is a bug in Advanced CI. Report it to dbt Labs.
-- B) Yes — dynamic data masking does NOT apply to Advanced CI cached samples. All users with job access see the same unmasked cached rows.
-- C) No — users only see masked rows unless they have the warehouse masking policy bypass privilege.
+- A) Yes — dynamic data masking does NOT apply to Advanced CI cached samples. All account users can see the unmasked cached rows.
+- B) No — users only see masked rows unless they have the warehouse masking policy bypass privilege.
+- C) No — this is a bug in Advanced CI. Report it to dbt Labs.
 - D) Yes — but masking is applied after the 30-day cache expiry when data is reloaded.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: A**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | This is documented, expected behavior — not a bug. |
-> | **B) ✅ Correct** | Advanced CI caches up to **100 rows per model** at query time and stores them encrypted in S3/Azure Blob. **Dynamic data masking does NOT apply** to these cached rows — all users with job access see the same unmasked data regardless of their warehouse masking privileges. Sensitive models containing PII should be excluded from Advanced CI comparisons using `--exclude tag:pii`. |
-> | **C) ❌ Incorrect** | The cached rows bypass masking entirely — it's not a per-user privilege question. |
+> | **A) ✅ Correct** | Advanced CI caches up to **100 rows per model** at query time and stores them encrypted in S3/Azure Blob. **Dynamic data masking does NOT apply** to these cached rows — the cached data is not dynamically masked, and the docs say all account users can view the comparison results and cached data. Restrict the CI environment's credentials, or use synthetic data. |
+> | **B) ❌ Incorrect** | The cached rows bypass masking entirely — it's not a per-user privilege question. |
+> | **C) ❌ Incorrect** | This is documented, expected behavior — not a bug. |
 > | **D) ❌ Incorrect** | After 30 days the cache expires — data becomes inaccessible entirely. Masking is not retroactively applied at expiry. |
 >
-> > 💡 **Key rule**: Advanced CI cache = **no dynamic data masking**. Exclude PII models with `--exclude tag:pii`.
+> > 💡 **Key rule**: Advanced CI cache = **no dynamic data masking**. Restrict the CI environment's credentials, or use synthetic data.
 
 ---
 
 ### Q8.
-> **Subdomain 4.8 — Implementing run commands in the correct order**
+> **Subdomain 4.8 — Cross-project refs in a job**
 
-You are managing a dbt Mesh architecture with an upstream "Platform" project and a downstream "Marketing" project. The Marketing project's CI job fails because an upstream public model in Platform was dropped. You need to adjust the Marketing CI/CD pipeline to handle upstream dependencies without rebuilding the Platform project. Which command configuration is correct?
+A downstream project's models use `ref('platform', 'dim_customers')`, a public model in an upstream project. The job runs without rebuilding the upstream project. What resolves the ref?
 
-- A) Use `dbt clone` to copy the Platform project into the Marketing directory before running.
-- B) Run `dbt deps` followed by `dbt run` — dbt will automatically build the upstream Platform models.
-- C) Configure the Marketing CI job to use `dbt build --defer --state ...` pointing to the Platform production manifest. This allows Marketing models to read from Platform's production tables without rebuilding them.
-- D) Add a step to run `dbt run --select source:platform+` to rebuild the upstream dependencies.
+- A) dbt's metadata service, which points it at the upstream project's Production environment (or its Staging environment, for downstream Development and Staging runs, when Staging exists).
+- B) A `--state` flag pointing at the upstream project's `manifest.json`.
+- C) The downstream job rebuilds the upstream project first.
+- D) `dbt deps` copies the upstream models into the downstream project.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: C**
+> **✅ Correct: A**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | `dbt clone` creates zero-copy clones of existing tables in a target schema — it is not designed to copy cross-project source code or manage cross-project manifest references in a Mesh architecture. |
-> | **B) ❌ Incorrect** | `dbt deps` only installs package code. Running `dbt run` in Marketing will not build Platform models — `dbt build --select` does NOT trigger upstream project builds across project boundaries. |
-> | **C) ✅ Correct** | Using `--defer --state` pointing to the Platform project's production `manifest.json` allows unbuilt upstream models (in Platform) to be resolved against their **production tables** without rebuilding them. This is the standard Mesh CI pattern for consuming downstream projects. |
-> | **D) ❌ Incorrect** | `source:platform+` targets source nodes, not cross-project public model nodes. And even if it could, rebuilding Platform in Marketing's CI environment is not the goal. |
+> | **A) ✅ Correct** | The docs say dbt uses a metadata service to resolve references to public models in other projects on the fly. Downstream Production resolves to upstream Production. Downstream Staging and Development resolve to upstream Staging if it exists, otherwise Production. |
+> | **B) ❌ Incorrect** | Not how project dependencies work. The metadata service does the resolving. |
+> | **C) ❌ Incorrect** | Upstream models are not parsed or run in the downstream project. |
+> | **D) ❌ Incorrect** | `dbt deps` installs packages. Project dependencies go in `dependencies.yml`. |
 >
-> > 💡 **Key rule**: Mesh CI pattern = `--defer --state <upstream_manifest>` to resolve cross-project refs against production tables.
+> > 💡 **Key rule**: Cross-project `ref('project', 'model')` resolves through the metadata service to the upstream's Production (or Staging). The upstream project is not rebuilt.
 
 ---
 
 ### Q9.
 > **Subdomain 4.9 — Fork PRs**
 
-A developer forks a dbt project repository on GitHub and submits a pull request from their fork. The CI job fails with an error saying it cannot check out the commit. What is the cause and fix?
+A developer forks a dbt project repository on GitHub and submits a pull request from their fork. The job fails at the Clone Git Repository step with "Failed to checkout to specified revision." What is the cause and fix?
 
-- A) The developer's fork is on a different GitHub account — add that account as a collaborator.
+- A) The CI job needs `--select state:new` instead of `state:modified+` to detect commits from forks.
 - B) dbt Cloud cannot check out commits from fork repositories — the developer must push to the origin repository directly.
-- C) The CI job needs `--select state:new` instead of `state:modified+` to detect commits from forks.
+- C) The developer's fork is on a different GitHub account — add that account as a collaborator.
 - D) Fork-based PRs require a service token with write access to the fork repository.
 
 > [!success]- Answer & Explanations
@@ -216,12 +216,12 @@ A developer forks a dbt project repository on GitHub and submits a pull request 
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | Adding as a collaborator doesn't resolve the fundamental limitation — dbt cannot check out fork commits regardless of permissions. |
-> | **B) ✅ Correct** | dbt Cloud cannot check out commits from **forked repositories** — this is a documented limitation. Contributors must push their changes to the **origin (upstream) repository** directly, either as a branch or with write access. Fork-based PRs are not supported for CI. |
-> | **C) ❌ Incorrect** | The selector has no bearing on whether dbt can access fork commits. |
-> | **D) ❌ Incorrect** | Service tokens don't enable fork checkout — the limitation is architectural, not credential-based. |
+> | **A) ❌ Incorrect** | The selector has no bearing on whether dbt can access fork commits. |
+> | **B) ✅ Correct** | The docs say dbt can only check out commits that belong to the **original repository**, not commits that belong to a fork. Push the branch to the original repo. |
+> | **C) ❌ Incorrect** | Not a documented fix. dbt can only check out commits from the original repo. |
+> | **D) ❌ Incorrect** | Not a documented fix. |
 >
-> > 💡 **Key rule**: Fork PRs = unsupported. Contributors must push to origin repo directly.
+> > 💡 **Key rule**: dbt only checks out commits from the original repo. Push the branch there.
 
 ---
 
@@ -231,45 +231,45 @@ A developer forks a dbt project repository on GitHub and submits a pull request 
 A company enables PrivateLink for all dbt Cloud connections for security compliance. Shortly after, CI jobs stop running entirely and no error messages appear in the dbt Cloud UI. What is the cause?
 
 - A) PrivateLink requires a VPN client on each developer's machine, which blocks CI from running.
-- B) CI hooks are not available with Virtual Private dbt (PrivateLink) — jobs fail silently.
-- C) PrivateLink automatically disables webhook triggers, which CI hooks rely on.
-- D) PrivateLink connections require the Enterprise+ plan for CI — the company is on Enterprise.
+- B) PrivateLink connections require the Enterprise+ plan for CI — the company is on Enterprise.
+- C) With ingress PrivateLink or IP allowlisting, CI hooks may not be available, and the job can fail silently.
+- D) PrivateLink automatically disables webhook triggers, which CI hooks rely on.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: C**
 >
 > | | |
 > |---|---|
 > | **A) ❌ Incorrect** | PrivateLink is a server-side network configuration — it doesn't require VPN clients. |
-> | **B) ✅ Correct** | CI hooks (the mechanism that triggers CI jobs from git provider events) are **not available with Virtual Private dbt (PrivateLink)**. The jobs fail silently — no error messages appear in the dbt UI. Check the PrivateLink security settings to identify the conflict. |
-> | **C) ❌ Incorrect** | PrivateLink doesn't automatically disable webhooks at the networking level — the issue is at the CI hook layer specifically. |
-> | **D) ❌ Incorrect** | This is not a documented plan-level limitation specific to PrivateLink + CI. |
+> | **B) ❌ Incorrect** | This is not a documented plan-level limitation specific to PrivateLink + CI. |
+> | **C) ✅ Correct** | The docs say that on Enterprise plans with ingress PrivateLink or IP allowlisting, registering CI hooks may not be available and can cause the job to fail silently. |
+> | **D) ❌ Incorrect** | PrivateLink doesn't automatically disable webhooks at the networking level — the issue is at the CI hook layer specifically. |
 >
-> > 💡 **Key rule**: PrivateLink + CI = hooks not available → CI fails **silently**. Plan ahead before enabling PrivateLink.
+> > 💡 **Key rule**: Ingress PrivateLink or IP allowlisting: CI hooks may be unavailable → CI can fail **silently**.
 
 ---
 
 ### Q11. ⭐
 > **Subdomain 4.11 — Understanding when to use which type of job deferral**
 
-An organization is implementing a dbt Mesh architecture with three separate dbt projects: `staging`, `marts`, and `finance_specific`. The `marts` project depends on models from `staging`. A developer makes a change to a model in the `staging` project. Which of the following is required to correctly implement deferral in the `staging` project's CI job to test the change against the production versions of its downstream dependencies? **Select TWO correct answers.**
+A deploy job has "Compare changes against" set to **Environment** instead of **This Job**. What does that change?
 
-- A) The `dbt_project.yml` of the `staging` project must define the `marts` and `finance_specific` projects in its `dependencies.yml` file.
-- B) Deferral cannot be used across different dbt projects; each project's entire dependency chain must be fully rebuilt within its own CI job.
-- C) The CI job command must use the `--state` flag to point to the production `manifest.json` artifacts of `marts` and `finance_specific`.
-- D) The CI job must execute a command that includes the `--defer` flag.
+- A) It defers to a hand-picked job ID in that environment.
+- B) It compares against the job's own last successful run.
+- C) It turns deferral off.
+- D) It compares against the latest successful run in that environment, from any deploy job that updates artifacts there.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: C, D**
+> **✅ Correct: D**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | In a Mesh architecture, the upstream project (`staging`) does not list its consumers in `dependencies.yml`. The downstream project (`marts`) lists its dependencies. The upstream project's CI job simply tests its own changes. |
-> | **B) ❌ Incorrect** | Cross-project deferral is a fundamental feature of dbt Mesh — specifically designed to allow independent projects to interact and test against each other's production state without a monolithic rebuild. |
-> | **C) ✅ Correct** | The `--state` flag is used to specify the directory containing the production `manifest.json` artifacts. In dbt Mesh, providing the state of downstream projects allows the CI job to reference production `manifest.json` artifacts of `marts` and `finance_specific`. |
-> | **D) ✅ Correct** | The `--defer` flag is used to specify that unselected upstream parents should be resolved against production tables (not rebuilt). This is the core mechanism for deferral in any CI job. |
+> | **A) ❌ Incorrect** | The docs say built-in deferral targets an environment, not a hand-picked job ID. |
+> | **B) ❌ Incorrect** | That is **This Job** (self-deferral), the older behavior. |
+> | **C) ❌ Incorrect** | Deferral off is **No deferral**, the default for deploy jobs. |
+> | **D) ✅ Correct** | Environment deferral considers all deploy jobs that run in the deferred environment. The docs call it more efficient and more accurate than deferring to one job. |
 >
-> > 💡 **Key rule**: Standard CI deferral pattern = `dbt build --select state:modified+ --defer --state /path/to/prod/manifest`. Both `--defer` AND `--state` are required.
+> > 💡 **Key rule**: Deploy job default = No deferral. CI job default = Production environment. **Environment** (recommended) = latest successful run there from any job. **This Job** = that job's own last successful run.
 
 ---
 
@@ -279,21 +279,21 @@ An organization is implementing a dbt Mesh architecture with three separate dbt 
 A CI job uses `dbt build --select state:modified+ --defer --state /prod/manifest`. A developer changes only the value of a runtime variable in `dbt_project.yml` (e.g., changes `default_event_window: 30` to `default_event_window: 60`). The CI job runs but doesn't build any models. Why?
 
 - A) Variable changes require a `dbt compile` run before `state:modified` can detect them.
-- B) `--vars` and `dbt_project.yml` variable changes are **invisible to `state:modified`** — dbt cannot diff variable values between manifests.
-- C) The variable was changed in `dbt_project.yml` instead of via `--vars` flag — this is why it wasn't detected.
-- D) `state:modified` only detects SQL and YAML config changes, not Python or YAML variable changes.
+- B) `state:modified` only detects SQL and YAML config changes, not Python or YAML variable changes.
+- C) dbt can't trace a `var()` value change into `state:modified`, so the affected models aren't flagged as modified.
+- D) The variable was changed in `dbt_project.yml` instead of via `--vars` flag — this is why it wasn't detected.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: C**
 >
 > | | |
 > |---|---|
 > | **A) ❌ Incorrect** | `dbt compile` doesn't help — the issue is that variable values are not tracked as part of the manifest state diff. |
-> | **B) ✅ Correct** | `state:modified` compares node-level SQL content and configs — it **cannot detect changes to variable values** in `dbt_project.yml` or via `--vars`. Only SQL body changes, config changes, or structural changes are diffable. If only a var value changes, affected models will not appear as modified and will not rebuild. |
-> | **C) ❌ Incorrect** | The location of the variable change (`dbt_project.yml` vs `--vars`) doesn't matter — neither is tracked by `state:modified`. |
-> | **D) ❌ Incorrect** | YAML variable definitions are not tracked even though other YAML config changes are. Variable values are evaluated at runtime, not stored in the manifest diff. |
+> | **B) ❌ Incorrect** | YAML variable definitions are not tracked even though other YAML config changes are. Variable values are evaluated at runtime, not stored in the manifest diff. |
+> | **C) ✅ Correct** | The docs say that if a model uses a `var` or `env_var`, dbt can't identify that lineage in a way that puts the model in `state:modified` when the value changes. It's only likely to be marked modified if the change alters the model's configuration. |
+> | **D) ❌ Incorrect** | The location doesn't matter. The docs say `var` and `env_var` value changes can't be traced into `state:modified`. |
 >
-> > 💡 **Key rule**: `--vars` / variable changes are **invisible to `state:modified`**. Only SQL body, configs, and structure are diffable.
+> > 💡 **Key rule**: `var()` / `env_var()` value changes aren't traced by `state:modified`. A model is likely flagged only if its config changes.
 
 ---
 
@@ -304,24 +304,24 @@ A CI job is configured as:
 ```bash
 dbt build --select state:modified+ --defer --state ./target --target-path ./target
 ```
-Developers report that every CI run rebuilds the full DAG regardless of how many models were changed. What is the root cause?
+Developers report that `state:modified` and `--defer` give inconsistent results. What is the root cause?
 
 - A) The `./target` directory does not exist before the first run, causing state comparison to fail.
-- B) `--state` and `--target-path` point to the same directory — dbt overwrites `manifest.json` during parse before state comparison runs, so it always compares against the freshly-written manifest.
-- C) The `--defer` flag conflicts with `--state` when they point to the same directory.
-- D) CI jobs require an absolute path for `--state` — relative paths cause state comparison failures.
+- B) The `--defer` flag conflicts with `--state` when they point to the same directory.
+- C) CI jobs require an absolute path for `--state` — relative paths cause state comparison failures.
+- D) `--state` and `--target-path` point to the same directory — dbt overwrites `manifest.json` during parse before state comparison runs, so it always compares against the freshly-written manifest.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: D**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | If the directory doesn't exist, the job would fail with an error — not rebuild the full DAG silently. |
-> | **B) ✅ Correct** | This is a critical gotcha: dbt writes a **new `manifest.json`** to `--target-path` during the parse phase, *before* comparing against `--state`. When both point to the same directory, dbt overwrites the production manifest with the freshly-compiled manifest — then compares the fresh manifest against itself. Result: zero differences detected → `state:modified` selects nothing → full build is triggered as fallback. Fix: use **separate directories** for `--state` and `--target-path`. |
-> | **C) ❌ Incorrect** | `--defer` and `--state` don't conflict with each other — they're designed to be used together. |
-> | **D) ❌ Incorrect** | Relative paths work — the issue is the directory overlap, not the path format. |
+> | **A) ❌ Incorrect** | A missing directory isn't what the docs describe. |
+> | **B) ❌ Incorrect** | `--defer` and `--state` don't conflict with each other — they're designed to be used together. |
+> | **C) ❌ Incorrect** | Relative paths work — the issue is the directory overlap, not the path format. |
+> | **D) ✅ Correct** | The docs say dbt overwrites `manifest.json` while parsing, so setting `--state` and `--target-path` to the same path with `--defer` or `state:modified` gives non-idempotent behavior. Fix: keep the saved manifest in its own folder, use a different `--target-path`, or pass `--no-write-json`. |
 >
-> > 💡 **Key rule**: `--state` and `--target-path` must point to **separate directories**. Same dir = manifest overwrite = no diff detected.
+> > 💡 **Key rule**: `--state` and `--target-path` must point to **separate directories**. Same dir = manifest overwritten = non-idempotent state comparison.
 
 ---
 
@@ -330,46 +330,46 @@ Developers report that every CI run rebuilds the full DAG regardless of how many
 
 Which of the following correctly selects a model named `fct_orders` plus all of its downstream descendants AND all ancestors of those descendants (the full closure)?
 
-- A) `+fct_orders+`
-- B) `fct_orders+`
-- C) `@fct_orders`
-- D) `2+fct_orders+2`
+- A) `2+fct_orders+2`
+- B) `@fct_orders`
+- C) `fct_orders+`
+- D) `+fct_orders+`
 
 > [!success]- Answer & Explanations
-> **✅ Correct: C**
+> **✅ Correct: B**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | `+fct_orders+` selects: all ancestors of `fct_orders` + `fct_orders` + all descendants. It does NOT include ancestors of those descendants. |
-> | **B) ❌ Incorrect** | `fct_orders+` selects: `fct_orders` + all descendants only. No ancestors included. |
-> | **C) ✅ Correct** | `@fct_orders` is the **full closure operator** — it selects: `fct_orders` + all descendants + all ancestors of those descendants. It ensures that everything needed to build the model AND all its downstream tests exists. Commonly used in CI scenarios. |
-> | **D) ❌ Incorrect** | `2+fct_orders+2` is bounded depth selection — up to 2 ancestors + `fct_orders` + up to 2 descendants. Not a full closure. |
+> | **A) ❌ Incorrect** | `2+fct_orders+2` is bounded depth selection — up to 2 ancestors + `fct_orders` + up to 2 descendants. Not a full closure. |
+> | **B) ✅ Correct** | `@fct_orders` is the **full closure operator** — it selects: `fct_orders` + all descendants + all ancestors of those descendants. It ensures that everything needed to build the model AND all its downstream tests exists. Commonly used in CI scenarios. |
+> | **C) ❌ Incorrect** | `fct_orders+` selects: `fct_orders` + all descendants only. No ancestors included. |
+> | **D) ❌ Incorrect** | `+fct_orders+` selects: all ancestors of `fct_orders` + `fct_orders` + all descendants. It does NOT include ancestors of those descendants. |
 >
 > > 💡 **Key rule**: `@model` = full closure (model + descendants + all ancestors of descendants). Use in CI to ensure all deps exist.
 
 ---
 
 ### Q15. ⭐
-> **Subdomain 4.15 — Self-deferral**
+> **Subdomain 4.15 — Default deferral for CI jobs**
 
-A new CI job is configured with self-deferral (defers against its own previous successful run). On its very first execution, what happens?
+A new CI job is created. What is "Compare changes against" set to by default?
 
-- A) The job fails with an error because no prior manifest exists to defer against.
-- B) The job runs successfully but builds only the models that `state:modified` identifies.
-- C) The job falls back to a full DAG build because there is no prior manifest from a previous run of the same job.
-- D) The job skips deferral and uses the production environment's manifest instead.
+- A) No deferral.
+- B) The Production environment, if one exists.
+- C) This Job.
+- D) The Staging environment.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: C**
+> **✅ Correct: B**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | The job does not fail — it falls back gracefully to a full build. |
-> | **B) ❌ Incorrect** | Without a prior manifest, `state:modified` has nothing to compare against — it cannot selectively identify modified models. |
-> | **C) ✅ Correct** | Self-deferral requires a prior successful run of the **same job** to produce a manifest. On the first-ever run, no manifest exists — the job falls back to a full DAG build. This is expected behavior, not an error. |
-> | **D) ❌ Incorrect** | Self-deferral does not fall back to the production environment's manifest — it falls back to a full build. |
+> | **A) ❌ Incorrect** | No deferral is the default for **deploy** jobs. |
+> | **B) ✅ Correct** | The docs say it's set to the Production environment if you created one. This lets dbt check the PR's code against production so it only builds modified code. |
+> | **C) ❌ Incorrect** | This Job (self-deferral) is a separate, older option. |
+> | **D) ❌ Incorrect** | Not the default for CI jobs. |
 >
-> > 💡 **Key rule**: Self-deferral first run = **full DAG build** (no prior manifest). Cost savings only kick in from run 2 onward.
+> > 💡 **Key rule**: CI job default = Production environment. Deploy job default = No deferral. State comparison needs a deferred environment selected.
 
 ---
 
@@ -378,20 +378,20 @@ A new CI job is configured with self-deferral (defers against its own previous s
 
 A `dbt build` run is executing. A `not_null` test on the `stg_orders` model fails. What happens to all models that depend on `stg_orders`?
 
-- A) They run normally — test failures don't affect downstream model execution.
-- B) They fail with an ERROR status — inheriting the upstream test failure.
+- A) They run but are flagged as "potentially unreliable" in the run results.
+- B) They run normally — test failures don't affect downstream model execution.
 - C) They enter **SKIP** status — they do not run at all because an upstream dependency failed.
-- D) They run but are flagged as "potentially unreliable" in the run results.
+- D) They fail with an ERROR status — inheriting the upstream test failure.
 
 > [!success]- Answer & Explanations
 > **✅ Correct: C**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | Test failures on upstream models do block downstream execution in `dbt build`. |
-> | **B) ❌ Incorrect** | Downstream models are not marked as ERROR — they are marked as SKIP. The error is attributed to the failing test, not the downstream models themselves. |
+> | **A) ❌ Incorrect** | There is no "potentially unreliable" status in dbt run results. |
+> | **B) ❌ Incorrect** | Test failures on upstream models do block downstream execution in `dbt build`. |
 > | **C) ✅ Correct** | In `dbt build`, a failing test on an upstream model causes all downstream dependent models to enter **SKIP** status — they never run. To prevent this blocking behavior, set the test severity to `warn` instead of `error`. |
-> | **D) ❌ Incorrect** | There is no "potentially unreliable" status in dbt run results. |
+> | **D) ❌ Incorrect** | Downstream models are not marked as ERROR — they are marked as SKIP. The error is attributed to the failing test, not the downstream models themselves. |
 >
 > > 💡 **Key rule**: `dbt build` upstream test fail → downstream models = **SKIP** (not ERROR). Use `severity: warn` to prevent blocking.
 
@@ -402,19 +402,19 @@ A `dbt build` run is executing. A `not_null` test on the `stg_orders` model fail
 
 When does `dbt build` execute unit tests relative to model materialization?
 
-- A) After all models are materialized — so unit tests validate the final output.
-- B) Before model materialization — so unit tests catch logic errors before any expensive table builds.
-- C) Concurrently with model materialization — unit tests and builds run in parallel.
+- A) Before model materialization — so unit tests catch logic errors before any expensive table builds.
+- B) Concurrently with model materialization — unit tests and builds run in parallel.
+- C) After all models are materialized — so unit tests validate the final output.
 - D) At the same time as data tests (schema tests) — all test types run in the same phase.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: A**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | Running after materialization defeats the purpose of unit tests — you'd spend compute building a table that a unit test immediately invalidates. |
-> | **B) ✅ Correct** | Unit tests run **before** model materialization in `dbt build`. If a unit test fails, the model never materializes — saving warehouse compute. This "fail early, fail cheap" design is intentional. |
-> | **C) ❌ Incorrect** | Unit tests run in a defined sequential phase, not concurrently with builds. |
+> | **A) ✅ Correct** | Unit tests run **before** model materialization in `dbt build`. If a unit test fails, the model never materializes — saving warehouse compute. This "fail early, fail cheap" design is intentional. |
+> | **B) ❌ Incorrect** | Unit tests run in a defined sequential phase, not concurrently with builds. |
+> | **C) ❌ Incorrect** | Running after materialization defeats the purpose of unit tests — you'd spend compute building a table that a unit test immediately invalidates. |
 > | **D) ❌ Incorrect** | Data tests (schema tests) run after materialization. Unit tests have their own earlier phase. |
 >
 > > 💡 **Key rule**: Unit tests run **before** materialization. Fail early = cheaper. Data tests run after materialization.
@@ -426,20 +426,20 @@ When does `dbt build` execute unit tests relative to model materialization?
 
 A company stores multiple dbt Cloud projects (Project A, Project B, Project C) in a single monorepo. A developer opens a PR that only modifies files in Project A. What does dbt Cloud do?
 
-- A) Only Project A's CI job triggers — dbt detects which project's files changed.
+- A) No CI jobs trigger — monorepo setups require separate repository connections per project.
 - B) CI jobs for all three projects (A, B, and C) trigger from the single PR.
-- C) No CI jobs trigger — monorepo setups require separate repository connections per project.
-- D) Project A's CI job triggers immediately; B and C trigger only if A's CI passes.
+- C) Project A's CI job triggers immediately; B and C trigger only if A's CI passes.
+- D) Only Project A's CI job triggers — dbt detects which project's files changed.
 
 > [!success]- Answer & Explanations
 > **✅ Correct: B**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | dbt Cloud does not currently perform file-path-based filtering to limit CI triggers to the affected project in a monorepo. |
+> | **A) ❌ Incorrect** | Monorepos are supported — each project has its own connection to the shared repository. |
 > | **B) ✅ Correct** | In a monorepo, a **single PR triggers CI jobs for ALL connected dbt projects** — even if only one project's files changed. This is a known limitation. Workaround: use project-specific target branches (e.g., `main-project-a`) to scope CI triggers. |
-> | **C) ❌ Incorrect** | Monorepos are supported — each project has its own connection to the shared repository. |
-> | **D) ❌ Incorrect** | There is no sequential triggering based on CI success in this scenario — all CI jobs trigger simultaneously. |
+> | **C) ❌ Incorrect** | There is no sequential triggering based on CI success in this scenario — all CI jobs trigger simultaneously. |
+> | **D) ❌ Incorrect** | dbt Cloud does not currently perform file-path-based filtering to limit CI triggers to the affected project in a monorepo. |
 >
 > > 💡 **Key rule**: Monorepo = single PR triggers CI for **all** connected projects. Workaround: project-specific target branches.
 
@@ -448,50 +448,48 @@ A company stores multiple dbt Cloud projects (Project A, Project B, Project C) i
 ### Q19.
 > **Subdomain 4.19 — Job chaining plan requirements**
 
-An architect wants to configure Job B in Project B to automatically trigger after Job A in Project A completes. What is the minimum dbt Cloud plan required for this configuration?
+An architect wants Job B in Project B to run automatically after Job A in Project A completes. Which plans can do this?
 
-- A) Developer plan — job chaining is available on all plans.
-- B) Starter plan — job chaining is available on Starter and above.
-- C) Enterprise plan — cross-project job chaining requires Enterprise.
-- D) Enterprise+ plan — cross-project references require Enterprise+.
+- A) Developer or Starter.
+- B) Starter and above, including cross-project chaining.
+- C) Enterprise-tier plans. Chaining needs Starter or above, but Starter and Developer are limited to one project each.
+- D) Enterprise+ only.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: B**
+> **✅ Correct: C**
 >
 > | | |
 > |---|---|
-> | **A) ❌ Incorrect** | Developer plan does **not** support job chaining — it's explicitly excluded. |
-> | **B) ✅ Correct** | Job chaining (triggering a job when another job finishes) is available on **Starter and above** — including cross-project chaining. Developer plan is the only tier that doesn't support it. |
-> | **C) ❌ Incorrect** | Enterprise is not required — Starter is sufficient for job chaining. |
-> | **D) ❌ Incorrect** | Enterprise+ is required for cross-project *ref resolution* (dbt Mesh), not for job chaining. These are different features. |
+> | **A) ❌ Incorrect** | Developer doesn't support "Run when another job finishes", and neither plan allows a second project. |
+> | **B) ❌ Incorrect** | Chaining is Starter and above, but Starter is limited to one project, so it can't chain across two projects. |
+> | **C) ✅ Correct** | "Run when another job finishes" needs a Starter or Enterprise-tier plan. Starter and Developer are limited to one project each, so chaining between two projects needs an Enterprise-tier plan. |
+> | **D) ❌ Incorrect** | The docs don't limit chaining to Enterprise+. |
 >
-> > 💡 **Key rule**: Job chaining = **Starter+** (not Developer). Can chain across projects. Cross-project *refs* = Enterprise+.
+> > 💡 **Key rule**: Chaining = Starter and above (not Developer). Cross-project chaining needs more than one project, so Enterprise-tier. "Completes on" = Success only, or all statuses.
 
 ---
 
 ### Q20. ⭐
-> **Subdomain 4.20 — Configuring Advanced CI**
+> **Subdomain 4.20 — Slim CI**
 
-An organization's dbt project has grown to over 3,000 models, and the full CI run on every pull request now takes over an hour. An architect needs to implement a "Slim CI" strategy to drastically reduce run times while ensuring data quality and integrity for all changes. Which of the following actions should the architect take? **Select TWO correct answers.**
+A project has over 3,000 models and full CI runs take over an hour. Which change cuts CI time while still testing every changed model?
 
-- A) Cache the `dbt_packages` and `target` directories between CI runs to speed up dependency installation and compilation.
-- B) Implement a CI job that runs the command `dbt build --select state:modified+ --defer --state ./prod_manifest`.
-- C) Configure the CI job to only run `dbt test` for pull requests, relying on developers to test locally.
-- D) Increase the size of the data warehouse used for the CI environment to improve query performance.
-- E) Disable all tests in the CI environment and run them only in the production job after merging.
+- A) Run `dbt build` on every PR with more threads.
+- B) Disable all tests in CI and run them only after merge.
+- C) Increase the CI warehouse size.
+- D) Use a CI job with `dbt build --select state:modified+` that compares against the Production environment.
 
 > [!success]- Answer & Explanations
-> **✅ Correct: A, B**
+> **✅ Correct: D**
 >
 > | | |
 > |---|---|
-> | **A) ✅ Correct** | Caching `dbt_packages` avoids repetitive downloads via `dbt deps`, which can take several minutes. Caching the `target` directory enables "Partial Parsing" — dbt only re-parses modified files, significantly reducing compilation phase time. |
-> | **B) ✅ Correct** | `dbt build --select state:modified+` runs only modified models and their downstream dependents. `--defer --state` resolves unmodified upstream parents against production tables instead of rebuilding them. This is the canonical "Slim CI" command. |
-> | **C) ❌ Incorrect** | Relying on developers to test locally is not a robust strategy for a project of this size. CI ensures project-wide integrity and prevents human error or environmental inconsistencies from entering the production branch. |
-> | **D) ❌ Incorrect** | Scaling up the warehouse is a brute-force approach that addresses query speed but not the architectural inefficiency. It also increases costs significantly. |
-> | **E) ❌ Incorrect** | Disabling tests in CI removes the safety net that prevents broken code from reaching production. Tests are the point of CI. |
+> | **A) ❌ Incorrect** | It still builds every model. |
+> | **B) ❌ Incorrect** | That removes the safety net CI exists for. |
+> | **C) ❌ Incorrect** | Not a documented approach, and it doesn't cut the amount of work. |
+> | **D) ✅ Correct** | This is the default CI command. It builds only new or changed models and their downstream dependents, and deferring to Production means unmodified upstream models aren't rebuilt. |
 >
-> > 💡 **Key rule**: Slim CI = `state:modified+` + `--defer --state` + package/target caching for fastest feedback loop.
+> > 💡 **Key rule**: Slim CI = `dbt build --select state:modified+` + compare against the Production environment.
 
 ---
 
